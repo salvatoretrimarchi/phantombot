@@ -161,3 +161,256 @@ describe("runDoctor", () => {
     expect(report.nightly.last_status).toBe("ok");
   });
 });
+
+describe("runDoctor systemd health check", () => {
+  // Driven by the checkSystemd test seam so we don't depend on real
+  // systemctl. The new check catches the broken-symlink class of bug
+  // where timers look enabled but never fire — exactly the failure that
+  // stranded all scheduled tasks on hz-phantombot in May 2026.
+
+  test("reports a healthy systemd subsystem in the human summary", async () => {
+    await writeState({
+      last_run: new Date().toISOString(),
+      last_status: "ok",
+    });
+    const out = new CaptureStream();
+    const code = await runDoctor({
+      config,
+      out,
+      checkSystemd: async () => ({
+        missing_unit_files: [],
+        inactive_timers: [],
+        repaired: false,
+      }),
+    });
+    expect(code).toBe(0);
+    expect(out.text).toContain(
+      "systemd: ok — all unit files present, all timers active",
+    );
+  });
+
+  test("reports missing unit files and inactive timers", async () => {
+    await writeState({
+      last_run: new Date().toISOString(),
+      last_status: "ok",
+    });
+    const out = new CaptureStream();
+    const code = await runDoctor({
+      config,
+      out,
+      checkSystemd: async () => ({
+        missing_unit_files: ["phantombot-tick.timer"],
+        inactive_timers: ["phantombot-tick.timer"],
+        repaired: false,
+      }),
+    });
+    // Nightly is healthy, but systemd has unrepaired damage → exit 1.
+    expect(code).toBe(1);
+    expect(out.text).toContain("systemd: WARN");
+    expect(out.text).toContain("missing: phantombot-tick.timer");
+    expect(out.text).toContain("inactive: phantombot-tick.timer");
+    expect(out.text).toContain("run `phantombot install` to repair");
+  });
+
+  test("repaired=true tells the user no manual action is needed", async () => {
+    await writeState({
+      last_run: new Date().toISOString(),
+      last_status: "ok",
+    });
+    const out = new CaptureStream();
+    const code = await runDoctor({
+      config,
+      out,
+      checkSystemd: async () => ({
+        missing_unit_files: ["phantombot-tick.timer"],
+        inactive_timers: [],
+        repaired: true,
+      }),
+    });
+    // Damage was healed → exit 0, message tells user it's fixed.
+    expect(code).toBe(0);
+    expect(out.text).toContain("re-rendered units and re-armed timers");
+  });
+
+  test("checkSystemd=false omits the systemd section entirely", async () => {
+    await writeState({
+      last_run: new Date().toISOString(),
+      last_status: "ok",
+    });
+    const out = new CaptureStream();
+    await runDoctor({
+      config,
+      out,
+      checkSystemd: false,
+    });
+    expect(out.text).not.toContain("systemd:");
+  });
+
+  test("json mode includes the systemd block when checked", async () => {
+    await writeState({
+      last_run: new Date().toISOString(),
+      last_status: "ok",
+    });
+    const out = new CaptureStream();
+    await runDoctor({
+      config,
+      json: true,
+      out,
+      checkSystemd: async () => ({
+        missing_unit_files: [],
+        inactive_timers: ["phantombot-tick.timer"],
+        repaired: false,
+      }),
+    });
+    const report = JSON.parse(out.text);
+    expect(report.systemd).toEqual({
+      missing_unit_files: [],
+      inactive_timers: ["phantombot-tick.timer"],
+      repaired: false,
+    });
+  });
+});
+
+describe("runDoctor timer-fired staleness check", () => {
+  // Driven by the checkTimers test seam so we don't read real marker
+  // files. Catches the long-uptime failure mode where the timer is
+  // "active" but hasn't actually fired in hours (bus drop, host
+  // suspend, etc.) — the only signal is what tick + heartbeat wrote
+  // to disk on their last successful fire.
+
+  test("fresh heartbeat + tick markers pass with exit 0", async () => {
+    await writeState({
+      last_run: new Date().toISOString(),
+      last_status: "ok",
+    });
+    const out = new CaptureStream();
+    const code = await runDoctor({
+      config,
+      out,
+      checkTimers: async () => ({
+        heartbeat: {
+          last_fired: "2026-05-20T08:55:00.000Z",
+          age_minutes: 2,
+          stale: false,
+          threshold_minutes: 120,
+        },
+        tick: {
+          last_fired: "2026-05-20T08:57:30.000Z",
+          age_minutes: 0,
+          stale: false,
+          threshold_minutes: 5,
+        },
+      }),
+    });
+    expect(code).toBe(0);
+    expect(out.text).toContain("heartbeat: ok");
+    expect(out.text).toContain("tick: ok");
+    expect(out.text).toContain("2m ago");
+  });
+
+  test("stale heartbeat → WARN + exit 1", async () => {
+    await writeState({
+      last_run: new Date().toISOString(),
+      last_status: "ok",
+    });
+    const out = new CaptureStream();
+    const code = await runDoctor({
+      config,
+      out,
+      checkTimers: async () => ({
+        heartbeat: {
+          last_fired: "2026-05-20T05:00:00.000Z",
+          age_minutes: 240,
+          stale: true,
+          threshold_minutes: 120,
+        },
+        tick: {
+          last_fired: "2026-05-20T08:57:30.000Z",
+          age_minutes: 0,
+          stale: false,
+          threshold_minutes: 5,
+        },
+      }),
+    });
+    expect(code).toBe(1);
+    expect(out.text).toContain("heartbeat: WARN");
+    expect(out.text).toContain("240m ago");
+    expect(out.text).toContain("STALE");
+    expect(out.text).toContain("tick: ok");
+  });
+
+  test("missing marker → reported as never recorded + stale", async () => {
+    await writeState({
+      last_run: new Date().toISOString(),
+      last_status: "ok",
+    });
+    const out = new CaptureStream();
+    const code = await runDoctor({
+      config,
+      out,
+      checkTimers: async () => ({
+        heartbeat: {
+          stale: true,
+          threshold_minutes: 120,
+        },
+        tick: {
+          last_fired: "2026-05-20T08:57:30.000Z",
+          age_minutes: 0,
+          stale: false,
+          threshold_minutes: 5,
+        },
+      }),
+    });
+    expect(code).toBe(1);
+    expect(out.text).toContain("heartbeat: WARN — never recorded");
+  });
+
+  test("checkTimers=false omits the timer sections entirely", async () => {
+    await writeState({
+      last_run: new Date().toISOString(),
+      last_status: "ok",
+    });
+    const out = new CaptureStream();
+    await runDoctor({
+      config,
+      out,
+      checkSystemd: false,
+      checkTimers: false,
+    });
+    expect(out.text).not.toContain("heartbeat:");
+    expect(out.text).not.toContain("tick:");
+  });
+
+  test("json mode emits the timers block when checked", async () => {
+    await writeState({
+      last_run: new Date().toISOString(),
+      last_status: "ok",
+    });
+    const out = new CaptureStream();
+    await runDoctor({
+      config,
+      json: true,
+      out,
+      checkSystemd: false,
+      checkTimers: async () => ({
+        heartbeat: {
+          last_fired: "2026-05-20T08:55:00.000Z",
+          age_minutes: 2,
+          stale: false,
+          threshold_minutes: 120,
+        },
+        tick: {
+          last_fired: "2026-05-20T08:57:30.000Z",
+          age_minutes: 0,
+          stale: false,
+          threshold_minutes: 5,
+        },
+      }),
+    });
+    const report = JSON.parse(out.text);
+    expect(report.timers.heartbeat.age_minutes).toBe(2);
+    expect(report.timers.tick.age_minutes).toBe(0);
+    expect(report.timers.heartbeat.stale).toBe(false);
+    expect(report.timers.tick.stale).toBe(false);
+  });
+});
