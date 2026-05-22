@@ -136,14 +136,22 @@ StandardError=journal
 `;
 }
 
-/** Generate the heartbeat timer body — fires every 30 minutes. */
+/**
+ * Generate the heartbeat timer body — fires every 30 minutes.
+ *
+ * Uses OnCalendar (wall-clock anchored) rather than OnUnitActiveSec
+ * (relative to the last service activation). OnUnitActiveSec can wedge
+ * into the `active (elapsed) / Trigger: n/a` zombie state after long
+ * user-manager uptime and silently stop rescheduling — the heartbeat
+ * stalled 8 days this way (2026-05-14 → 2026-05-22). A calendar schedule
+ * cannot enter that state. Matches nightly.timer's anchoring.
+ */
 export function generateHeartbeatTimer(): string {
   return `[Unit]
 Description=Phantombot heartbeat timer (every 30 min)
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=30min
+OnCalendar=*:0/30
 AccuracySec=1min
 Persistent=true
 
@@ -529,6 +537,22 @@ export function phantombotUnitTargets(
 export interface EnsureUnitsCurrentOptions extends PhantombotUnitPathOverrides {
   binPath: string;
   systemctl: SystemctlRunner;
+  /**
+   * Timer unit names (e.g. "phantombot-heartbeat.timer") that must be
+   * re-armed even when systemd reports them enabled AND active.
+   *
+   * Why this exists: a timer can sit in `active (elapsed)` with
+   * `NextElapse: n/a` — systemd's `is-active` says "active", but the
+   * timer has stopped scheduling future fires and is silently dead.
+   * `is-enabled`/`is-active` can't see this; the only ground truth is
+   * whether the timer's work actually ran recently (the last-fired
+   * markers in timerHealth.ts). Callers that detect a stale marker pass
+   * the corresponding timer here so we `restart` it — which forces
+   * systemd to recompute the next elapse and re-arm. `enable --now` is
+   * a no-op on an already-active timer, so it can't fix this case; only
+   * a restart can. Empty/omitted = no forced re-arm (the default).
+   */
+  forceRearmTimers?: readonly string[];
 }
 
 export interface EnsureUnitsCurrentResult {
@@ -571,6 +595,7 @@ export async function ensureSystemdUnitsCurrent(
   // armed. Anything else means the timer isn't actually running and we
   // need to enable --now to repair it. Cheap to recheck — systemctl is
   // local IPC and these calls take ~ms.
+  const forceRearm = new Set(opts.forceRearmTimers ?? []);
   const repairedTimers: string[] = [];
   for (const t of targets) {
     if (!t.isTimer) continue;
@@ -582,7 +607,20 @@ export async function ensureSystemdUnitsCurrent(
     const active = await opts.systemctl.run(["--user", "is-active", t.unit]);
     const isEnabled = enabled.exitCode === 0 && enabled.stdout.trim() === "enabled";
     const isActive = active.exitCode === 0 && active.stdout.trim() === "active";
-    if (isEnabled && isActive) continue;
+    if (isEnabled && isActive) {
+      // Looks healthy to systemd. But if a ground-truth marker says this
+      // timer has stopped firing (the `active (elapsed)` zombie), re-arm
+      // it with `restart` — enable --now won't touch an already-active
+      // timer, so it can't recover this state. restart forces systemd to
+      // recompute the next elapse and re-arm the trigger; combined with
+      // Persistent=true any missed run fires a catch-up almost
+      // immediately, which also refreshes the last-fired marker.
+      if (forceRearm.has(t.unit)) {
+        await opts.systemctl.run(["--user", "restart", t.unit]);
+        repairedTimers.push(t.unit);
+      }
+      continue;
+    }
     await opts.systemctl.run(["--user", "enable", "--now", t.unit]);
     repairedTimers.push(t.unit);
   }
