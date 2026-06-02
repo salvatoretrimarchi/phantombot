@@ -40,6 +40,7 @@ import {
   transcribe,
   ttsSupported,
 } from "../lib/audio.ts";
+import { DEFAULT_STT_TIMEOUT_MS } from "../lib/voice.ts";
 import type { WriteSink } from "../lib/io.ts";
 import { log } from "../lib/logger.ts";
 import type { ServiceControl } from "../lib/systemd.ts";
@@ -1351,7 +1352,11 @@ export async function runTelegramServer(
         }
 
         // Enqueue onto this chat's serial chain.
-        const prev = chatChains.get(msg.chatId) ?? Promise.resolve();
+        // Convert prior rejection to resolution so a thrown
+        // processChatMessage doesn't wedge the per-chat queue (GitHub #135).
+        const prev = (chatChains.get(msg.chatId) ?? Promise.resolve()).catch(
+          () => {},
+        );
         const next = prev.then(() =>
           processChatMessage(msg, {
             input,
@@ -1379,6 +1384,29 @@ export async function runTelegramServer(
       await Promise.allSettled([...inFlight]);
     }
   }
+}
+
+/** Thrown when the STT download+transcribe step exceeds its time budget. */
+class SttTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`STT step exceeded ${ms}ms budget`);
+    this.name = "SttTimeoutError";
+  }
+}
+
+/**
+ * Race `p` against a timer. If the timer wins, reject with SttTimeoutError so
+ * the caller's catch can recover and the per-chat queue advances (GitHub
+ * #135). We cannot cancel the underlying request — the transport exposes no
+ * AbortSignal — so the orphaned promise is left to settle on its own; the
+ * point is that the *queue* no longer waits on it.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new SttTimeoutError(ms)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -1437,30 +1465,60 @@ async function processChatMessage(
       );
       return;
     }
+    const fileId = msg.voice.fileId;
     try {
-      const file = await input.transport.downloadFile(msg.voice.fileId);
-      const r = await transcribe(input.config, file.data, file.mime);
+      // Bound the whole download+transcribe step. A hung request here would
+      // otherwise never settle, stalling every later message in this chat's
+      // serial queue forever — the wedge in GitHub #135.
+      const r = await withTimeout(
+        (async () => {
+          const file = await input.transport.downloadFile(fileId);
+          return transcribe(input.config, file.data, file.mime);
+        })(),
+        input.config.voice.sttTimeoutMs ?? DEFAULT_STT_TIMEOUT_MS,
+      );
       if (!r.ok) {
-        log.error("telegram: STT failed", { error: r.error });
-        await input.transport.sendMessage(
-          msg.chatId,
-          `(voice transcription failed: ${r.error})`,
-        );
+        log.error("telegram: STT failed", {
+          error: r.error,
+          persona: input.persona,
+          chatId: msg.chatId,
+        });
+        try {
+          await input.transport.sendMessage(
+            msg.chatId,
+            "🎙️ I couldn’t make out that voice note — the audio may be unclear or too quiet. Please try again, or type your message.",
+          );
+        } catch (sendErr) {
+          log.warn("telegram: STT failure notice send failed", {
+            error: (sendErr as Error).message,
+            chatId: msg.chatId,
+          });
+        }
         return;
       }
       msg.text = r.text;
       log.info("telegram: STT ok", {
         chatId: msg.chatId,
+        persona: input.persona,
         transcriptChars: r.text.length,
       });
     } catch (e) {
-      log.error("telegram: voice download failed", {
+      log.error("telegram: STT pipeline error", {
         error: (e as Error).message,
+        persona: input.persona,
+        chatId: msg.chatId,
       });
-      await input.transport.sendMessage(
-        msg.chatId,
-        `(couldn't download your voice message: ${(e as Error).message})`,
-      );
+      try {
+        await input.transport.sendMessage(
+          msg.chatId,
+          "⚠️ Something went wrong processing that voice note. Please try again in a moment, or type your message.",
+        );
+      } catch (sendErr) {
+        log.warn("telegram: STT failure notice send failed", {
+          error: (sendErr as Error).message,
+          chatId: msg.chatId,
+        });
+      }
       return;
     }
   }
