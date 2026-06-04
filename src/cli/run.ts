@@ -20,6 +20,13 @@ import {
   type TelegramAccount,
 } from "../config.ts";
 import { buildHarnessChain } from "../harnesses/buildChain.ts";
+import {
+  applyResolvedHarnessBins,
+  checkConfiguredHarnesses,
+  missingHarnesses,
+  resolvedHarnessBins,
+  type HarnessAvailability,
+} from "../lib/harnessAvailability.ts";
 import type { WriteSink } from "../lib/io.ts";
 import { log } from "../lib/logger.ts";
 import { healDefaultPersonaIfBroken } from "../lib/personaDefault.ts";
@@ -31,6 +38,7 @@ import {
 } from "../lib/runLock.ts";
 import { notifyPostRestartIfPending } from "../lib/updateNotify.ts";
 import { openMemoryStore } from "../memory/store.ts";
+import { saveHarnessBins } from "../state.ts";
 import { VERSION } from "../version.ts";
 import { runDoctor } from "./doctor.ts";
 
@@ -40,6 +48,11 @@ export interface RunInput {
   err?: WriteSink;
   /** Override the lock file path (for testing). */
   lockPath?: string;
+  /** Test seam for harness binary availability. Pass false to skip. */
+  checkHarnesses?:
+    | false
+    | ((config: Config) => Promise<HarnessAvailability[]>);
+  runTelegramServer?: typeof runTelegramServer;
 }
 
 /** One persona-bound listener that runRun() will spawn. */
@@ -127,7 +140,7 @@ export async function runRun(input: RunInput = {}): Promise<number> {
   const out = input.out ?? process.stdout;
   const err = input.err ?? process.stderr;
 
-  const config = input.config ?? (await loadConfig());
+  let config = input.config ?? (await loadConfig());
   const hasDefault = !!config.channels.telegram;
   const hasPersonas =
     !!config.channels.telegramPersonas &&
@@ -171,6 +184,33 @@ export async function runRun(input: RunInput = {}): Promise<number> {
       "no telegram listeners could be started — every configured bot's persona is missing.\n",
     );
     return 2;
+  }
+
+  const harnessChecks =
+    input.checkHarnesses === false
+      ? []
+      : input.checkHarnesses
+        ? await input.checkHarnesses(config)
+        : await checkConfiguredHarnesses(config);
+  if (input.checkHarnesses !== false) {
+    const resolved = resolvedHarnessBins(harnessChecks);
+    if (Object.keys(resolved).length > 0) {
+      await saveHarnessBins(resolved);
+      config = applyResolvedHarnessBins(config, harnessChecks);
+    }
+  }
+  const missingHarnessBins = missingHarnesses(harnessChecks);
+  if (missingHarnessBins.length > 0) {
+    log.error("run: configured harness binary not found", {
+      missing: missingHarnessBins.map((h) => ({ id: h.id, bin: h.bin })),
+    });
+    err.write(
+      "warning: configured harness binary not found:\n" +
+        missingHarnessBins
+          .map((h) => `  ${h.id}: '${h.bin}'`)
+          .join("\n") +
+        "\nPhantombot will keep running; harness turns using these binaries will fail until doctor/config repairs them.\n",
+    );
   }
 
   const harnesses = buildHarnessChain(config, err);
@@ -289,8 +329,9 @@ export async function runRun(input: RunInput = {}): Promise<number> {
   try {
     // Fan-out: one listener per (persona, account). Shared AbortSignal
     // so Ctrl-C cleanly tears all of them down together.
+    const startTelegram = input.runTelegramServer ?? runTelegramServer;
     const tasks = plan.listeners.map((l) =>
-      runTelegramServer({
+      startTelegram({
         config,
         memory,
         harnesses,

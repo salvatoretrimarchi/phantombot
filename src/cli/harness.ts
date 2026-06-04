@@ -5,17 +5,19 @@
  */
 
 import { defineCommand } from "citty";
-import { access, constants } from "node:fs/promises";
-import { join } from "node:path";
 import * as p from "@clack/prompts";
 
 import { type Config, loadConfig } from "../config.ts";
 import { setIn, updateConfigToml } from "../lib/configWriter.ts";
+import { harnessBin, whichBinary } from "../lib/harnessAvailability.ts";
 import {
   defaultServiceControl,
   restartCommand,
   type ServiceControl,
 } from "../lib/platform.ts";
+import { saveHarnessBins } from "../state.ts";
+
+export { whichBinary } from "../lib/harnessAvailability.ts";
 
 export type HarnessId = "claude" | "pi" | "gemini" | "codex";
 export const SUPPORTED_HARNESSES: ReadonlyArray<HarnessId> = [
@@ -24,34 +26,6 @@ export const SUPPORTED_HARNESSES: ReadonlyArray<HarnessId> = [
   "gemini",
   "codex",
 ];
-
-export async function whichBinary(bin: string): Promise<string | undefined> {
-  if (bin.startsWith("/")) {
-    try {
-      await access(bin, constants.X_OK);
-      return bin;
-    } catch {
-      return undefined;
-    }
-  }
-  const path = process.env.PATH ?? "";
-  for (const dir of path.split(":")) {
-    if (!dir) continue;
-    const candidate = join(dir, bin);
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      /* keep looking */
-    }
-  }
-  return undefined;
-}
-
-function harnessBin(config: Config, id: HarnessId): string {
-  if (id === "codex") return config.harnesses.codex?.bin ?? "codex";
-  return config.harnesses[id].bin;
-}
 
 export async function detectAvailability(
   config: Config,
@@ -87,6 +61,7 @@ interface RunInput {
 export async function runHarness(input: RunInput = {}): Promise<number> {
   const config = input.config ?? (await loadConfig());
   const availability = input.availability ?? (await detectAvailability(config));
+  await saveHarnessBins(availability);
   const svc = input.serviceControl ?? defaultServiceControl();
 
   p.intro("Configure the harness chain");
