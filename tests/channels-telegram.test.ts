@@ -42,6 +42,10 @@ import type {
 } from "../src/harnesses/types.ts";
 import type { ServiceControl } from "../src/lib/systemd.ts";
 import { openMemoryStore, type MemoryStore } from "../src/memory/store.ts";
+import {
+  clearReplyModeOverride,
+  setReplyModeOverride,
+} from "../src/lib/replyMode.ts";
 
 class FakeTransport implements TelegramTransport {
   pendingUpdates: TelegramMessage[] = [];
@@ -615,6 +619,7 @@ describe("formatAttachmentUserText", () => {
 let workdir: string;
 let memory: MemoryStore;
 let agentDir: string;
+const SAVED_REPLY_MODE_STATE = process.env.PHANTOMBOT_REPLY_MODE_STATE;
 
 beforeEach(async () => {
   workdir = await mkdtemp(join(tmpdir(), "phantombot-tg-"));
@@ -622,10 +627,13 @@ beforeEach(async () => {
   await mkdir(agentDir, { recursive: true });
   await writeFile(join(agentDir, "BOOT.md"), "# Phantom", "utf8");
   memory = await openMemoryStore(":memory:");
+  process.env.PHANTOMBOT_REPLY_MODE_STATE = join(workdir, "reply-mode.json");
 });
 
 afterEach(async () => {
   await memory.close();
+  if (SAVED_REPLY_MODE_STATE === undefined) delete process.env.PHANTOMBOT_REPLY_MODE_STATE;
+  else process.env.PHANTOMBOT_REPLY_MODE_STATE = SAVED_REPLY_MODE_STATE;
   await rm(workdir, { recursive: true, force: true });
 });
 
@@ -1869,12 +1877,16 @@ describe("runTelegramServer voice round-trip", () => {
   });
 
   // ---------------------------------------------------------------------
-  // Per-message modality override — voice-in/text-in routing can be
-  // flipped by an explicit directive in the message text. STT still
-  // runs for voice-in so the directive in the transcript is visible.
+  // Stateful reply-mode override — no regex scan of message text. The model
+  // sets this via `phantombot reply-mode`; the channel only enforces state.
   // ---------------------------------------------------------------------
 
-  test("voice-in + 'respond in text' override → text reply, no TTS call, no sendVoice", async () => {
+  test("voice-in + persisted text override → text reply, no TTS call, no sendVoice", async () => {
+    await setReplyModeOverride({
+      persona: "phantom",
+      conversation: "telegram:1001",
+      mode: "text",
+    });
     const originalFetch = globalThis.fetch;
     let whisperCalled = 0;
     let ttsCalled = 0;
@@ -1884,10 +1896,10 @@ describe("runTelegramServer voice round-trip", () => {
       const u = String(url);
       if (u.includes("audio/transcriptions")) {
         whisperCalled++;
-        return new Response(
-          JSON.stringify({ text: "what's the weather — respond in text" }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+        return new Response(JSON.stringify({ text: "what's the weather" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
       }
       if (u.includes("audio/speech")) {
         ttsCalled++;
@@ -1921,7 +1933,6 @@ describe("runTelegramServer voice round-trip", () => {
       expect(ttsCalled).toBe(0); // but TTS was skipped
       expect(transport.voiceSent).toEqual([]);
       expect(transport.sent).toEqual([{ chatId: "1001", text: "sunny" }]);
-      // typing indicator (text-out) not recording (voice-out)
       expect(transport.typing.length).toBeGreaterThan(0);
       expect(transport.recording).toEqual([]);
     } finally {
@@ -1929,7 +1940,12 @@ describe("runTelegramServer voice round-trip", () => {
     }
   });
 
-  test("text-in + 'send a voice note' override → voice reply (TTS called, sendVoice fired)", async () => {
+  test("text-in + persisted voice override → voice reply (TTS called, sendVoice fired)", async () => {
+    await setReplyModeOverride({
+      persona: "phantom",
+      conversation: "telegram:1001",
+      mode: "voice",
+    });
     const originalFetch = globalThis.fetch;
     let ttsCalled = 0;
     (globalThis as unknown as { fetch: typeof fetch }).fetch = (async (
@@ -1952,7 +1968,7 @@ describe("runTelegramServer voice round-trip", () => {
         updateId: 1,
         conversationId: "1001",
         senderId: "42",
-        text: "give me today's agenda — send me a voice note",
+        text: "give me today's agenda",
       });
       const harness = new ScriptedHarness("fake", [
         { type: "done", finalText: "two meetings and a haircut" },
@@ -1969,25 +1985,216 @@ describe("runTelegramServer voice round-trip", () => {
       expect(ttsCalled).toBe(1);
       expect(transport.voiceSent).toHaveLength(1);
       expect(transport.voiceSent[0]?.chatId).toBe("1001");
-      // No text fallback when the voice send succeeded.
       expect(transport.sent).toEqual([]);
-      // recording indicator (voice-out path)
       expect(transport.recording.length).toBeGreaterThan(0);
     } finally {
       (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
     }
   });
 
-  test("text-in + voice override + provider=none (no TTS) → graceful text reply", async () => {
-    // The override asks for voice but the configured provider can't do
-    // TTS — caller must NOT crash, just send text as if no override
-    // existed.
+  test("done meta replyMode=voice sets state and applies to the current text turn", async () => {
+    const originalFetch = globalThis.fetch;
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = (async (
+      url: string | URL | Request,
+    ) => {
+      if (String(url).includes("audio/speech")) {
+        return new Response(Buffer.from([1, 2, 3, 4]), {
+          status: 200,
+          headers: { "content-type": "audio/ogg" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+
+    try {
+      const transport = new FakeTransport();
+      transport.pendingUpdates.push({
+        updateId: 1,
+        conversationId: "1001",
+        senderId: "42",
+        text: "switch to voice and tell me the agenda",
+      });
+      const harness = new ScriptedHarness("fake", [
+        {
+          type: "done",
+          finalText: "two meetings",
+          meta: { replyMode: "voice" },
+        },
+      ]);
+      await runTelegramServer({
+        config: withVoiceConfig(),
+        memory,
+        harnesses: [harness],
+        agentDir,
+        persona: "phantom",
+        transport,
+        oneShot: true,
+      });
+      expect(transport.voiceSent).toHaveLength(1);
+      expect(transport.sent).toEqual([]);
+    } finally {
+      (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+    }
+  });
+
+  test("tool-set reply-mode voice is re-read and applies to the current final reply", async () => {
+    const originalFetch = globalThis.fetch;
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = (async (
+      url: string | URL | Request,
+    ) => {
+      if (String(url).includes("audio/speech")) {
+        return new Response(Buffer.from([1, 2, 3, 4]), {
+          status: 200,
+          headers: { "content-type": "audio/ogg" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+
+    try {
+      const transport = new FakeTransport();
+      transport.pendingUpdates.push({
+        updateId: 1,
+        conversationId: "1001",
+        senderId: "42",
+        text: "use voice for this answer",
+      });
+      const harness: Harness = {
+        id: "fake",
+        available: async () => true,
+        async *invoke() {
+          await setReplyModeOverride({
+            persona: "phantom",
+            conversation: "telegram:1001",
+            mode: "voice",
+          });
+          yield { type: "done", finalText: "spoken now" };
+        },
+      };
+      await runTelegramServer({
+        config: withVoiceConfig(),
+        memory,
+        harnesses: [harness],
+        agentDir,
+        persona: "phantom",
+        transport,
+        oneShot: true,
+      });
+      expect(transport.voiceSent).toHaveLength(1);
+      expect(transport.sent).toEqual([]);
+    } finally {
+      (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+    }
+  });
+
+  test("tool-disable reply-mode is re-read and mirrors the current text turn", async () => {
+    await setReplyModeOverride({
+      persona: "phantom",
+      conversation: "telegram:1001",
+      mode: "voice",
+    });
+    const transport = new FakeTransport();
+    transport.pendingUpdates.push({
+      updateId: 1,
+      conversationId: "1001",
+      senderId: "42",
+      text: "disable override for this answer",
+    });
+    const harness: Harness = {
+      id: "fake",
+      available: async () => true,
+      async *invoke() {
+        await clearReplyModeOverride({
+          persona: "phantom",
+          conversation: "telegram:1001",
+        });
+        yield { type: "done", finalText: "normal text now" };
+      },
+    };
+    await runTelegramServer({
+      config: withVoiceConfig(),
+      memory,
+      harnesses: [harness],
+      agentDir,
+      persona: "phantom",
+      transport,
+      oneShot: true,
+    });
+    expect(transport.voiceSent).toEqual([]);
+    expect(transport.sent).toEqual([{ chatId: "1001", text: "normal text now" }]);
+  });
+
+  test("message wording no longer flips routing without persisted state", async () => {
     const transport = new FakeTransport();
     transport.pendingUpdates.push({
       updateId: 1,
       conversationId: "1001",
       senderId: "42",
       text: "ping — reply with voice please",
+    });
+    const harness = new ScriptedHarness("fake", [
+      { type: "done", finalText: "pong" },
+    ]);
+    await runTelegramServer({
+      config: withVoiceConfig(),
+      memory,
+      harnesses: [harness],
+      agentDir,
+      persona: "phantom",
+      transport,
+      oneShot: true,
+    });
+    expect(transport.voiceSent).toEqual([]);
+    expect(transport.sent).toEqual([{ chatId: "1001", text: "pong" }]);
+    expect(transport.recording).toEqual([]);
+    expect(transport.typing.length).toBeGreaterThan(0);
+  });
+
+  test("done meta replyMode=disable clears persisted override and mirrors current turn", async () => {
+    await setReplyModeOverride({
+      persona: "phantom",
+      conversation: "telegram:1001",
+      mode: "voice",
+    });
+    const transport = new FakeTransport();
+    transport.pendingUpdates.push({
+      updateId: 1,
+      conversationId: "1001",
+      senderId: "42",
+      text: "back to normal please",
+    });
+    const harness = new ScriptedHarness("fake", [
+      {
+        type: "done",
+        finalText: "normal text",
+        meta: { replyMode: "disable" },
+      },
+    ]);
+    await runTelegramServer({
+      config: withVoiceConfig(),
+      memory,
+      harnesses: [harness],
+      agentDir,
+      persona: "phantom",
+      transport,
+      oneShot: true,
+    });
+    expect(transport.voiceSent).toEqual([]);
+    expect(transport.sent).toEqual([{ chatId: "1001", text: "normal text" }]);
+  });
+
+  test("text-in + persisted voice override + provider=none (no TTS) → graceful text reply", async () => {
+    await setReplyModeOverride({
+      persona: "phantom",
+      conversation: "telegram:1001",
+      mode: "voice",
+    });
+    const transport = new FakeTransport();
+    transport.pendingUpdates.push({
+      updateId: 1,
+      conversationId: "1001",
+      senderId: "42",
+      text: "ping",
     });
     const harness = new ScriptedHarness("fake", [
       { type: "done", finalText: "pong" },
