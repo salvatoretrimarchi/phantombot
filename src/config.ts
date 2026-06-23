@@ -17,6 +17,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { log } from "./lib/logger.ts";
+import {
+  type PiRoutingConfig,
+  resolveRouting,
+} from "./lib/piRouting.ts";
 import { DEFAULT_STT_TIMEOUT_MS } from "./lib/voice.ts";
 import { loadState } from "./state.ts";
 
@@ -107,12 +111,24 @@ export interface TurnIndexingSettings {
   interval: number;
   /** Max raw turn rows read from memory in one SQLite page. */
   batchSize: number;
+  /**
+   * Time-based safety net. Flush a conversation's unindexed tail when its
+   * oldest unindexed turn has aged past this many hours, even if the
+   * user-turn count hasn't reached `interval`. This drains sub-threshold
+   * tails (e.g. a conversation stuck at 19 turns) so recent chat stays
+   * semantically recallable instead of going invisible for days. The live
+   * service only flushes on a new message crossing the batch; the 30-min
+   * heartbeat applies this time-based drain across all conversations. Set
+   * to 0 to disable the time-based flush (count trigger only).
+   */
+  flushAfterHours: number;
 }
 
 export const DEFAULT_TURN_INDEXING: TurnIndexingSettings = {
   enabled: true,
   interval: 20,
   batchSize: 200,
+  flushAfterHours: 2,
 };
 
 /**
@@ -197,7 +213,17 @@ export interface Config {
     /** Order = primary → fallback. Recognized ids: "claude", "pi", "gemini", "codex". */
     chain: string[];
     claude: { bin: string; model: string; fallbackModel: string };
-    pi: { bin: string; maxPayloadBytes: number };
+    pi: {
+      bin: string;
+      maxPayloadBytes: number;
+      /**
+       * Capability routing (distinct from the failover `chain`). When set, the
+       * bundled Pi extension delegates vision/coding subtasks to specialist
+       * models. See lib/piRouting.ts for the env-var contract. Optional: absent
+       * = no per-capability routing (Pi uses its configured default model).
+       */
+      routing?: import("./lib/piRouting.ts").PiRoutingConfig;
+    };
     gemini: { bin: string; model: string };
     codex?: { bin: string; model: string };
   };
@@ -366,6 +392,7 @@ export async function loadConfig(): Promise<Config> {
           asInt(process.env.PHANTOMBOT_PI_MAX_PAYLOAD) ??
           asInt(tomlPi.max_payload_bytes) ??
           1_500_000,
+        routing: buildPiRoutingConfig(tomlPi),
       },
 
       gemini: {
@@ -511,10 +538,16 @@ function buildTurnIndexingConfig(
     asInt(process.env.PHANTOMBOT_RETRIEVAL_TURN_INDEXING_BATCH_SIZE) ??
     asInt(tomlTurnIndexing.batch_size) ??
     DEFAULT_TURN_INDEXING.batchSize;
+  const flushAfterHours =
+    asInt(process.env.PHANTOMBOT_RETRIEVAL_TURN_INDEXING_FLUSH_AFTER_HOURS) ??
+    asInt(tomlTurnIndexing.flush_after_hours) ??
+    DEFAULT_TURN_INDEXING.flushAfterHours;
   return {
     enabled,
     interval: Math.max(1, Math.min(10_000, interval)),
     batchSize: Math.max(1, Math.min(5_000, batchSize)),
+    // 0 disables the time-based flush; otherwise clamp to a sane 1h..1yr.
+    flushAfterHours: Math.max(0, Math.min(8_760, flushAfterHours)),
   };
 }
 
@@ -580,6 +613,28 @@ function asNumber(v: unknown): number | undefined {
     return Number.isFinite(n) ? n : undefined;
   }
   return undefined;
+}
+
+/**
+ * Resolve `[harnesses.pi.routing]` with env-over-TOML precedence (the shared
+ * rule, implemented once in resolveRouting). Returns undefined when no routing
+ * is configured at all so the field stays genuinely optional on Config — the
+ * extension's "no override" path. A bare primary with no image/coding model is
+ * still valid (means: route nothing but pin the orchestrator model).
+ */
+function buildPiRoutingConfig(
+  tomlPi: Record<string, unknown>,
+): PiRoutingConfig | undefined {
+  const tomlRouting = (tomlPi.routing ?? {}) as Record<string, unknown>;
+  const resolved = resolveRouting(tomlRouting);
+  if (
+    resolved.primaryModel === undefined &&
+    resolved.imageModel === undefined &&
+    resolved.codingModel === undefined
+  ) {
+    return undefined;
+  }
+  return resolved;
 }
 
 function buildEmbeddingsConfig(
