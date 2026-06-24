@@ -66,18 +66,38 @@ describe("logger redaction", () => {
   });
 
   test("redacts a self-identifying token nested inside an object field", () => {
-    // A context-free token (AWS access key id) is caught regardless of how
-    // it is nested, because whole-line redaction sees the serialized JSON.
-    // (Label-only secrets shaped `NAME=value` only fire in free text, since
-    // JSON renders fields as `"NAME":"value"` and the quotes break the
-    // `=`/`:`-adjacency the label patterns require.)
+    // A context-free token (AWS access key id) is caught regardless of how it
+    // is nested AND regardless of the key name — here the key (`account`) is
+    // not credential-bearing, so it is the token shape itself that triggers
+    // redaction, preserving the specific AWS sentinel.
     log.error("config dump", {
-      env: { creds: { keyId: "AKIAIOSFODNN7EXAMPLE" } },
+      env: { creds: { account: "AKIAIOSFODNN7EXAMPLE" } },
     });
     const raw = err.lines.join("");
     expect(raw).not.toContain("AKIAIOSFODNN7EXAMPLE");
     expect(raw).toContain("[AWS_KEY_REDACTED]");
     // Still valid JSON after redaction.
+    expect(() => lastLine(err.lines)).not.toThrow();
+  });
+
+  test("redacts a credential-bearing JSON field by its KEY name", () => {
+    // The structured-logging shape the review flagged: the value is only
+    // recognizable as a secret via its field name. After serialization it is
+    // `"TELEGRAM_BOT_TOKEN":"secret-value-123"` — no free-text `=` for the
+    // label rule to anchor on — so the sink must match the JSON key form.
+    log.info("env", { TELEGRAM_BOT_TOKEN: "secret-value-123" });
+    const line = lastLine(out.lines);
+    expect(JSON.stringify(line)).not.toContain("secret-value-123");
+    expect(line.TELEGRAM_BOT_TOKEN).toBe("[REDACTED]");
+  });
+
+  test("redacts a credential-bearing JSON field nested in an object", () => {
+    log.error("config dump", {
+      env: { TELEGRAM_BOT_TOKEN: "112233:AAExampleNestedSecretValue" },
+    });
+    const raw = err.lines.join("");
+    expect(raw).not.toContain("112233:AAExampleNestedSecretValue");
+    expect(raw).toContain('"TELEGRAM_BOT_TOKEN":"[REDACTED]"');
     expect(() => lastLine(err.lines)).not.toThrow();
   });
 

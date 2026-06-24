@@ -10,8 +10,10 @@
  * echoed into an `error` field (e.g. `log.warn("…", { error: e.message })`)
  * would be written to disk verbatim. Redacting the serialized line (rather
  * than each field) covers `msg`, every field value, and nested objects in
- * one pass. Replacement strings are quote/backslash-free, so the JSON stays
- * valid.
+ * one pass — including credential-bearing JSON keys (e.g. a
+ * `{ TELEGRAM_BOT_TOKEN: "…" }` field that serializes to
+ * `"TELEGRAM_BOT_TOKEN":"…"`), not just free-text `NAME=value` strings.
+ * Replacement strings are quote/backslash-free, so the JSON stays valid.
  */
 
 import { redactForLog } from "./redact.ts";
