@@ -33,6 +33,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { applyEdits, modify, parse, type ParseError } from "jsonc-parser";
 
+import { xdgConfigHome } from "../../config.ts";
 import type { WriteSink } from "../../lib/io.ts";
 
 export interface InstallZedOptions {
@@ -53,13 +54,40 @@ export interface InstallZedResult {
   backupPath?: string;
 }
 
+/**
+ * Absolute config override to bake into the registered `env` block.
+ *
+ * The installer runs as the REAL user, on a NATIVE phantombot install, so it
+ * knows the real absolute config path — exactly the path config.ts::loadConfig
+ * resolves by default. Baking it in pins Zed's spawned `phantombot acp` to the
+ * real config.toml even if Zed (or a future snap/flatpak Zed) ever spawns it with
+ * a redirected `$HOME`/`$XDG_*` — the same class of bug that breaks the
+ * strict-snap VS Code. We honour `$XDG_CONFIG_HOME` here precisely because
+ * config.ts does, so the override always agrees with the default resolution on a
+ * normal box (and is therefore a no-op there, just an insurance policy against a
+ * redirected child env).
+ *
+ * We deliberately DO NOT set `PHANTOMBOT_PERSONAS_DIR`: it is an absolute override
+ * that wins over `personas_dir` in config.toml, so baking it in would silently
+ * break any user with a custom persona root (the regression Kai flagged in
+ * review). Pinning PHANTOMBOT_CONFIG alone is enough — loadConfig then resolves
+ * `personas_dir` from that config, honouring default OR custom roots.
+ */
+export function phantombotEnvOverrides(): {
+  PHANTOMBOT_CONFIG: string;
+} {
+  return {
+    PHANTOMBOT_CONFIG: join(xdgConfigHome(), "phantombot", "config.toml"),
+  };
+}
+
 /** The block phantombot owns under `agent_servers`. */
 export function phantombotAgentServerBlock(binaryPath: string): {
   command: string;
   args: string[];
   env: Record<string, string>;
 } {
-  return { command: binaryPath, args: ["acp"], env: {} };
+  return { command: binaryPath, args: ["acp"], env: phantombotEnvOverrides() };
 }
 
 /**
