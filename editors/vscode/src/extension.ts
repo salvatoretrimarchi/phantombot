@@ -25,13 +25,10 @@ import {
   type ResolveResult,
 } from "./binaryResolver.ts";
 import { bridgePromptToStream } from "./participant.ts";
-import { askAboutSelectionQuery, openChatQuery } from "./commands.ts";
+import { createLanguageModelChatProvider } from "./lmProvider.ts";
+import { registerChatSessionProvider } from "./sessionProvider.ts";
 
 const PARTICIPANT_ID = "phantombot.chat";
-
-/** Command ids — mirrored in package.json `contributes.commands`. */
-const CMD_OPEN_CHAT = "phantombot.chat.open";
-const CMD_ASK_SELECTION = "phantombot.chat.askAboutSelection";
 
 /**
  * One ACP client + session per workspace folder. The session id is opaque to
@@ -110,45 +107,72 @@ export function activate(context: vscode.ExtensionContext): void {
   participant.iconPath = new vscode.ThemeIcon("hubot");
   context.subscriptions.push(participant);
 
-  // ── Discoverability commands (Command Palette / title-bar / context menu). ──
-  // All three funnel through VS Code's built-in `workbench.action.chat.open`,
-  // which opens the native Chat panel pre-filled with `query` — so the user
-  // lands in a turn already addressed to `@phantombot`.
-  const openChat = (query: string) =>
-    vscode.commands.executeCommand("workbench.action.chat.open", { query });
-
+  // ── First-class agent (no @mention, persistent history) ───────────────────
+  // Register phantombot as its own entry in VS Code's native chat *sessions*
+  // surface — the dedicated panel Copilot CLI and Claude Code live in. This is
+  // the real Zed "External Agent" twin: own session, own scrollback, history
+  // rehydrated from phantombot's server-side memory. Uses the chatSessionsProvider
+  // proposed API; registerChatSessionProvider no-ops cleanly if that proposal
+  // isn't enabled for this extension (see argv.json "enable-proposed-api").
   context.subscriptions.push(
-    vscode.commands.registerCommand(CMD_OPEN_CHAT, () => openChat(openChatQuery())),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand(CMD_ASK_SELECTION, () => {
-      const editor = vscode.window.activeTextEditor;
-      const doc = editor?.document;
-      const selectedText =
-        editor && doc ? doc.getText(editor.selection) : "";
-      const query = askAboutSelectionQuery({
-        selectedText,
-        languageId: doc?.languageId,
-        fileName: doc ? baseName(doc.uri.fsPath) : undefined,
-      });
-      return openChat(query);
+    registerChatSessionProvider({
+      createClient: (cwd) => makeSessionClient(cwd, output),
+      currentCwd: currentWorkspaceCwd,
+      workspaceFolders: () =>
+        (vscode.workspace.workspaceFolders ?? []).map((f) => ({
+          cwd: f.uri.fsPath,
+          name: f.name,
+        })),
+      personaLabel: () =>
+        vscode.workspace
+          .getConfiguration("phantombot")
+          .get<string>("persona")
+          ?.trim() ?? "",
+      participant,
+      participantId: PARTICIPANT_ID,
+      output,
     }),
   );
 
+  // ── First-class chat model (no @mention, native history) ─────────────────
+  // Register phantombot as a selectable model in the native Chat view via the
+  // Language Model Chat Provider API. Shares the SAME per-workspace ACP
+  // connection manager as the @phantombot participant above — the participant
+  // stays as a fallback surface. `vscode.lm` may be absent on very old hosts;
+  // guard so activation never throws on a stale VS Code.
+  if (vscode.lm?.registerLanguageModelChatProvider) {
+    const lmProvider = createLanguageModelChatProvider({
+      ensureConnection: (cwd) => ensureConnection(cwd, output, conns, context),
+      dropConnection: (cwd) => {
+        const c = conns.get(cwd);
+        if (c) {
+          c.client.dispose();
+          conns.delete(cwd);
+        }
+      },
+      currentCwd: currentWorkspaceCwd,
+      personaLabel: () =>
+        vscode.workspace
+          .getConfiguration("phantombot")
+          .get<string>("persona")
+          ?.trim() ?? "",
+      output,
+    });
+    context.subscriptions.push(
+      vscode.lm.registerLanguageModelChatProvider("phantombot", lmProvider),
+    );
+    output.appendLine(
+      'phantombot language model provider registered (pick "Phantombot" in the chat model list).',
+    );
+  }
+
   output.appendLine(
-    "phantombot chat participant registered (@phantombot) + commands.",
+    "phantombot chat participant registered (backs the first-class session agent).",
   );
 }
 
 export function deactivate(): void {
   // Subscriptions (incl. the disposeAll hook) are torn down by VS Code.
-}
-
-/** Last path segment of an fs path, separator-agnostic (POSIX + win32). */
-function baseName(fsPath: string): string {
-  const parts = fsPath.split(/[\\/]/);
-  return parts[parts.length - 1] || fsPath;
 }
 
 /** Resolve the workspace cwd, falling back to the home dir when none is open. */
@@ -194,6 +218,28 @@ async function ensureConnection(
   const conn: WorkspaceConn = { client, sessionId, cwd };
   conns.set(cwd, conn);
   return conn;
+}
+
+/**
+ * Build a fresh (un-initialized) ACP client for a workspace cwd — used by the
+ * chat-session provider, which owns its own initialize/load/prompt lifecycle.
+ * Throws (with an actionable message) if the binary can't be resolved.
+ */
+function makeSessionClient(
+  cwd: string,
+  output: vscode.OutputChannel,
+): AcpClient {
+  const resolved = resolveBinaryOrThrow(output);
+  const persona = vscode.workspace
+    .getConfiguration("phantombot")
+    .get<string>("persona");
+  return new AcpClient({
+    binaryPath: resolved.path,
+    persona: persona && persona.trim() ? persona.trim() : undefined,
+    cwd,
+    onDiagnostic: (text) =>
+      output.append(text.endsWith("\n") ? text : text + "\n"),
+  });
 }
 
 /** Resolve the binary from settings/PATH/install-locations or throw. */
