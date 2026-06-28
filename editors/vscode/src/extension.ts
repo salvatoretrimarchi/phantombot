@@ -26,9 +26,44 @@ import {
 } from "./binaryResolver.ts";
 import { bridgePromptToStream } from "./participant.ts";
 import { createLanguageModelChatProvider } from "./lmProvider.ts";
-import { registerChatSessionProvider } from "./sessionProvider.ts";
+import {
+  registerChatSessionProvider,
+  extractAttachments,
+} from "./sessionProvider.ts";
+import {
+  pickOpenSessionCommand,
+  promptBlocksFromRequest,
+  shouldAutoOpenSession,
+  SIDEBAR_OPEN_COMMAND,
+  EDITOR_OPEN_COMMAND,
+  type OpenOnStartup,
+} from "./sessionBridge.ts";
 
-const PARTICIPANT_ID = "phantombot.chat";
+// The participant id MUST equal the chat-session `type` (see package.json
+// contributes.chatSessions[].type). When `canDelegate: true`, VS Code registers
+// a delegate agent under that exact id and routes session requests to it via
+// `agentIdSilent`; the agent has no implementation until an extension attaches
+// one by creating a participant with the SAME id. A mismatched id (the old
+// "phantombot.chat") leaves the agent implementation-less, so every turn fails
+// with `No activated agent with id "phantombot"`. Keep these two in lockstep.
+const PARTICIPANT_ID = "phantombot";
+
+/** Command id for the "open phantombot chat" button / palette entry / keybinding. */
+const OPEN_SESSION_COMMAND = "phantombot.openSession";
+
+/** globalState key remembering whether the phantombot session has ever been opened. */
+const STICKY_KEY = "phantombot.everOpened";
+
+/**
+ * The per-type open commands (`…openNewSessionSidebar.phantombot`, etc.) only
+ * exist once VS Code has processed our `chatSessions` contribution — which now
+ * declares `canDelegate: true` so the commands actually register. At
+ * onStartupFinished that processing may not have happened yet, so the auto-open
+ * polls for the command to appear before giving up. See sessionBridge for the
+ * command ids and the picker.
+ */
+const OPEN_COMMAND_RETRIES = 20;
+const OPEN_COMMAND_RETRY_MS = 250;
 
 /**
  * One ACP client + session per workspace folder. The session id is opaque to
@@ -72,11 +107,18 @@ export function activate(context: vscode.ExtensionContext): void {
       return { errorDetails: { message: msg } };
     }
 
+    // Fold any dragged/pasted images + files into content blocks so the
+    // agent-implementation path (initial "open with prompt", @mention) carries
+    // attachments too — the session content provider already does this for the
+    // normal in-session turns.
+    const attachments = await extractAttachments(request, output);
+    const blocks = promptBlocksFromRequest(request.prompt, attachments);
+
     try {
       const { stopReason } = await bridgePromptToStream({
         client: conn.client,
         sessionId: conn.sessionId,
-        request: { prompt: request.prompt },
+        request: { prompt: request.prompt, blocks },
         stream: {
           markdown: (v) => stream.markdown(v),
           progress: (v) => stream.progress(v),
@@ -130,9 +172,29 @@ export function activate(context: vscode.ExtensionContext): void {
           ?.trim() ?? "",
       participant,
       participantId: PARTICIPANT_ID,
+      // Remember that phantombot has been opened so we can re-open it on future
+      // launches (the "ifUsedBefore" sticky default).
+      onSessionOpened: () => {
+        void context.globalState.update(STICKY_KEY, true);
+      },
       output,
     }),
   );
+
+  // ── Quick-launch command: button + palette + keybinding ───────────────────
+  // One click / shortcut to jump straight into the phantombot chat — no fishing
+  // through the model picker or the sessions list.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(OPEN_SESSION_COMMAND, () =>
+      openPhantombotSession(output),
+    ),
+  );
+
+  // ── Sticky: auto-open on startup if the user had it open before ────────────
+  // Runs at onStartupFinished (this activation event). The decision is pure and
+  // unit-tested; the side effect (executing the open command) is best-effort and
+  // never throws into activation.
+  void maybeAutoOpen(context, output);
 
   // ── First-class chat model (no @mention, native history) ─────────────────
   // Register phantombot as a selectable model in the native Chat view via the
@@ -173,6 +235,85 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   // Subscriptions (incl. the disposeAll hook) are torn down by VS Code.
+}
+
+/**
+ * Open the phantombot chat session in the native chat surface. Resolves the best
+ * command that's actually registered (sidebar session → editor session → focus
+ * the sessions viewer) rather than firing a hardcoded id that may not exist.
+ *
+ * On a cold start the per-type session commands register slightly after our
+ * onStartupFinished activation, so when `waitForCommand` is set we briefly poll
+ * for them to appear before falling back. Best-effort throughout: logs and gives
+ * up rather than throwing, since it's wired to a button/keybinding and startup.
+ */
+async function openPhantombotSession(
+  output: vscode.OutputChannel,
+  opts: { waitForCommand?: boolean } = {},
+): Promise<void> {
+  const retries = opts.waitForCommand ? OPEN_COMMAND_RETRIES : 1;
+
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const available = await vscode.commands.getCommands(true);
+    const cmd = pickOpenSessionCommand(available);
+
+    // Still waiting for the per-type commands to register? Retry before settling
+    // for the viewer fallback (which doesn't open our session specifically).
+    const isPerType = cmd === SIDEBAR_OPEN_COMMAND || cmd === EDITOR_OPEN_COMMAND;
+    if (!isPerType && opts.waitForCommand && attempt < retries - 1) {
+      await delay(OPEN_COMMAND_RETRY_MS);
+      continue;
+    }
+
+    if (!cmd) {
+      await delay(OPEN_COMMAND_RETRY_MS);
+      continue;
+    }
+
+    try {
+      await vscode.commands.executeCommand(cmd);
+      output.appendLine(`[open] opened phantombot via ${cmd}`);
+      return;
+    } catch (e) {
+      output.appendLine(`[open] ${cmd} failed: ${(e as Error).message}`);
+      return;
+    }
+  }
+
+  output.appendLine(
+    "[open] no phantombot session command available — is the chatSessions " +
+      "contribution registered? (needs canDelegate + enabled proposed APIs)",
+  );
+}
+
+/** Promise-based delay (avoids pulling in a timers import). */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * On startup, auto-open phantombot per the `phantombot.openOnStartup` setting
+ * (default: only once it has been opened at least once before — the "sticky"
+ * behaviour). Best-effort and isolated from activation failures.
+ */
+async function maybeAutoOpen(
+  context: vscode.ExtensionContext,
+  output: vscode.OutputChannel,
+): Promise<void> {
+  try {
+    const setting =
+      vscode.workspace
+        .getConfiguration("phantombot")
+        .get<OpenOnStartup>("openOnStartup") ?? "ifUsedBefore";
+    const usedBefore = context.globalState.get<boolean>(STICKY_KEY, false);
+    if (!shouldAutoOpenSession(setting, usedBefore)) return;
+    output.appendLine(
+      `[startup] auto-opening phantombot (openOnStartup=${setting}, usedBefore=${usedBefore}).`,
+    );
+    await openPhantombotSession(output, { waitForCommand: true });
+  } catch (e) {
+    output.appendLine(`[startup] auto-open skipped: ${(e as Error).message}`);
+  }
 }
 
 /** Resolve the workspace cwd, falling back to the home dir when none is open. */

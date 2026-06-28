@@ -57,6 +57,12 @@ export interface SessionProviderDeps {
   participant: vscode.ChatParticipant;
   /** Participant id (used when constructing history turns). */
   participantId: string;
+  /**
+   * Called whenever the user opens the phantombot session (its content is
+   * provided). Lets the host remember the session was open so it can be
+   * auto-reopened on the next launch (the "sticky" behaviour). Optional.
+   */
+  onSessionOpened?(): void;
   output: vscode.OutputChannel;
 }
 
@@ -151,6 +157,9 @@ export function registerChatSessionProvider(
   // ── Content provider: history rehydration + per-turn request handling ──────
   const contentProvider: vscode.ChatSessionContentProvider = {
     async provideChatSessionContent(resource: vscode.Uri) {
+      // The user just opened phantombot — remember it for sticky auto-open.
+      deps.onSessionOpened?.();
+
       const cwd =
         resource.scheme === SESSION_SCHEME && resource.path
           ? cwdFromResourcePath(resource.path)
@@ -300,7 +309,7 @@ function buildHistory(turns: readonly ReplayTurn[], participantId: string): unkn
  * inline image blocks; other dropped files become reference links. Best-effort:
  * a failed attachment is logged and skipped, never fatal to the turn.
  */
-async function extractAttachments(
+export async function extractAttachments(
   request: vscode.ChatRequest,
   output: vscode.OutputChannel,
 ): Promise<SessionAttachment[]> {
