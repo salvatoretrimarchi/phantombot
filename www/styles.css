@@ -383,3 +383,241 @@ footer {
     color: var(--muted);
     font-size: 1.1rem;
 }
+
+/* ============================================================
+   ADDITIVE BLOCK — editor extensions, Pi routing, channels.
+   Append-only. No rules above this line were modified.
+   ============================================================ */
+.editors,
+.pi-routing,
+.compounds,
+.phantomchat {
+    margin-bottom: 8rem;
+}
+
+.section-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 1rem;
+}
+
+.section-intro {
+    color: var(--muted);
+    font-size: 1.15rem;
+    max-width: 720px;
+    margin-bottom: 2.5rem;
+}
+
+.section-intro a {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
+.shot-cap {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-top: 1rem;
+    max-width: 760px;
+}
+
+.editor-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 2rem;
+    margin-top: 3rem;
+}
+
+/* Wide side-by-side hero (VS Code + Zed, two PRs at once) */
+.editors-parallel-frame {
+    margin-top: 2.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.editor-benefits {
+    margin-top: 4rem;
+}
+
+/* Primary | Vision | Coder pills */
+.swap-pills {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1rem;
+    margin: 2.5rem 0 3rem;
+}
+
+.pill {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--font-mono);
+    font-weight: bold;
+    font-size: 1.1rem;
+    padding: 1rem 1.5rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #0d1117;
+}
+
+.pill small {
+    font-weight: 400;
+    font-size: 0.7rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 0.4rem;
+}
+
+.pill-arrow {
+    font-family: var(--font-mono);
+    color: var(--accent);
+    font-size: 1.4rem;
+}
+
+.pi-principles {
+    margin-top: 4rem;
+}
+
+/* Channels */
+.channel-badge {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    padding: 0.25rem 0.8rem;
+    margin-bottom: 1.2rem;
+}
+
+.channel-note {
+    margin-top: 2rem;
+    font-family: var(--font-sans);
+    color: var(--muted);
+    max-width: 760px;
+}
+
+.channel-note strong {
+    color: var(--fg);
+}
+
+@media (max-width: 768px) {
+    .swap-pills {
+        justify-content: center;
+    }
+
+    .pill-arrow {
+        transform: rotate(90deg);
+    }
+}
+
+/* Telegram mobile two-up */
+.iphone-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 2rem;
+}
+
+.iphone-frame--captioned {
+    margin: 2rem auto;
+    padding: 0;
+}
+
+/* Even-height showcases: desktop + mobile side by side, all images same height.
+   Desktops are landscape, phones portrait, so we equalise the rendered IMAGE
+   height and let widths follow each image's own aspect ratio. */
+.phantomchat-showcase,
+.telegram-showcase {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 1.5rem;
+    margin-top: 3rem;
+}
+
+.phantomchat-showcase {
+    --shot-h: 210px;
+}
+
+.telegram-showcase {
+    --shot-h: 360px;
+}
+
+.phantomchat-showcase .terminal-window,
+.telegram-showcase .terminal-window,
+.phantomchat-showcase .iphone-frame,
+.telegram-showcase .iphone-frame {
+    flex: 0 0 auto;
+    min-width: 0;
+    max-width: none;
+    margin: 0;
+}
+
+.phantomchat-showcase .terminal-body,
+.telegram-showcase .terminal-body {
+    display: flex;
+}
+
+.phantomchat-showcase .screenshot,
+.telegram-showcase .screenshot,
+.phantomchat-showcase .iphone-frame .screenshot,
+.telegram-showcase .iphone-frame .screenshot {
+    height: var(--shot-h);
+    width: auto;
+}
+
+@media (max-width: 768px) {
+    .phantomchat-showcase,
+    .telegram-showcase {
+        --shot-h: auto;
+    }
+
+    .phantomchat-showcase .terminal-window,
+    .telegram-showcase .terminal-window {
+        flex-basis: 100%;
+        max-width: 420px;
+    }
+
+    .phantomchat-showcase .screenshot,
+    .telegram-showcase .screenshot {
+        height: auto;
+        width: 100%;
+    }
+
+    .phantomchat-showcase .iphone-frame .screenshot,
+    .telegram-showcase .iphone-frame .screenshot {
+        height: auto;
+        width: 100%;
+    }
+}
+
+/* Additive: PhantomChat onboarding CTA button */
+.onboard-cta {
+    display: inline-block;
+    margin: 1.4rem 0 0.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #0d1117;
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 0.7rem 1.4rem;
+    text-decoration: none;
+    transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.onboard-cta:hover,
+.onboard-cta:focus-visible {
+    background: transparent;
+    color: var(--accent);
+    transform: translateY(-1px);
+}

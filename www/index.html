@@ -54,6 +54,148 @@
             </div>
         </section>
 
+        <!-- Additive: editor extensions (VS Code / Zed) -->
+        <section class="editors">
+            <p class="section-eyebrow">Now in your editor</p>
+            <h2>Your Phantom, inside VS&nbsp;Code and Zed.</h2>
+            <p class="section-intro">Phantombot speaks the <a href="https://agentclientprotocol.com">Agent Client Protocol</a>, so the same Phantom you talk to on your phone now lives in your editor's chat panel &mdash; in <strong>VS&nbsp;Code</strong> and <strong>Zed</strong>. Same persona, same memory, same tools. Pick <em>Phantombot</em> from the agent list and start coding with an agent that already knows your repo, your decisions, and you.</p>
+
+            <div class="terminal-window editors-parallel-frame">
+                <div class="terminal-header">
+                    <span class="dot red"></span>
+                    <span class="dot yellow"></span>
+                    <span class="dot green"></span>
+                    <span class="title">VS&nbsp;Code &amp; Zed &mdash; two PRs at once</span>
+                </div>
+                <div class="terminal-body">
+                    <img src="assets/img/editors-parallel.webp" alt="VS Code and Zed open side by side full-screen, each running a Phantombot agent on a different pull request at the same time" class="screenshot" loading="lazy">
+                </div>
+            </div>
+            <p class="shot-cap">Run two Phantoms at once &mdash; <strong>VS&nbsp;Code</strong> and <strong>Zed</strong> side by side, each driving a different PR. Same persona and memory behind both, working in parallel.</p>
+
+            <div class="terminal-window crooked">
+                <div class="terminal-header">
+                    <span class="dot red"></span>
+                    <span class="dot yellow"></span>
+                    <span class="dot green"></span>
+                    <span class="title">VS Code &mdash; pick your agent</span>
+                </div>
+                <div class="terminal-body">
+                    <img src="assets/img/vscode-agent-picker.webp" alt="Selecting the Phantombot agent inside the VS Code chat panel" class="screenshot" loading="lazy">
+                </div>
+            </div>
+            <p class="shot-cap">Phantombot sits right next to Copilot and Claude in the agent picker &mdash; &ldquo;your personality-first agent: persona, memory and tools live server-side.&rdquo;</p>
+
+            <div class="editor-grid">
+                <div class="terminal-window">
+                    <div class="terminal-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <span class="title">VS Code &mdash; coding side-by-side</span>
+                    </div>
+                    <div class="terminal-body">
+                        <img src="assets/img/vscode-coding.webp" alt="Phantombot chat panel open beside source code in VS Code" class="screenshot" loading="lazy">
+                    </div>
+                </div>
+                <div class="terminal-window">
+                    <div class="terminal-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <span class="title">VS Code on macOS</span>
+                    </div>
+                    <div class="terminal-body">
+                        <img src="assets/img/vscode-macos.webp" alt="Phantombot extension running in VS Code on macOS" class="screenshot" loading="lazy">
+                    </div>
+                </div>
+            </div>
+
+            <p class="shot-cap">&hellip;and the same Phantom, native in <strong>Zed</strong> &mdash; light or dark, editing its own routing logic right beside you.</p>
+            <div class="editor-grid">
+                <div class="terminal-window">
+                    <div class="terminal-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <span class="title">Zed &mdash; light</span>
+                    </div>
+                    <div class="terminal-body">
+                        <img src="assets/img/zed-light.webp" alt="Phantombot agent panel open beside coderSwap.ts in Zed, light theme" class="screenshot" loading="lazy">
+                    </div>
+                </div>
+                <div class="terminal-window">
+                    <div class="terminal-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <span class="title">Zed &mdash; dark</span>
+                    </div>
+                    <div class="terminal-body">
+                        <img src="assets/img/zed-dark.webp" alt="Phantombot agent panel open beside coderSwap.ts in Zed, dark theme" class="screenshot" loading="lazy">
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid editor-benefits">
+                <div class="card">
+                    <h3>Less prompting</h3>
+                    <p>It already carries your context, so you stop re-explaining. Short asks like &ldquo;fix the flaky test&rdquo; land because the Phantom remembers the project &mdash; not just the message.</p>
+                </div>
+                <div class="card">
+                    <h3>Built for complex projects</h3>
+                    <p>Persistent memory means the bigger and longer-lived the codebase, the more your Phantom knows about it &mdash; exactly where most assistants fall off.</p>
+                </div>
+                <div class="card">
+                    <h3>One soul, every surface</h3>
+                    <p>Editor, phone, terminal &mdash; the same persona and memory behind all of them. Start a thread in VS Code, finish it from PhantomChat.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Additive: Pi harness Primary | Vision | Coder routing -->
+        <section class="pi-routing">
+            <p class="section-eyebrow">Under the hood &middot; Pi harness</p>
+            <h2>One brain per job: Primary &middot; Vision &middot; Coder.</h2>
+            <p class="section-intro">Phantombot doesn't bolt a coding model onto a chat model. It runs a single conversation and <strong>swaps the underlying brain to fit the moment</strong> &mdash; a fast, personable <em>Primary</em> for everyday talk, a <em>Vision</em> model when you share an image, and a heavyweight <em>Coder</em> when the work turns to code.</p>
+
+            <div class="swap-pills">
+                <span class="pill">Primary<small>conversation &middot; judgment</small></span>
+                <span class="pill-arrow">&rarr;</span>
+                <span class="pill">Vision<small>images &middot; screenshots</small></span>
+                <span class="pill-arrow">&rarr;</span>
+                <span class="pill">Coder<small>complex code</small></span>
+            </div>
+
+            <div class="terminal-window crooked">
+                <div class="terminal-header">
+                    <span class="dot red"></span>
+                    <span class="dot yellow"></span>
+                    <span class="dot green"></span>
+                    <span class="title">coderSwap.ts &mdash; the routing scorer</span>
+                </div>
+                <div class="terminal-body">
+                    <img src="assets/img/editor-coderswap.webp" alt="The coder-swap routing scorer open in the editor while Phantombot explains it" class="screenshot" loading="lazy">
+                </div>
+            </div>
+            <p class="shot-cap">The Phantom editing its own routing logic &mdash; the scorer that decides when to swap in the Coder brain.</p>
+
+            <div class="features-detailed pi-principles">
+                <div class="feature">
+                    <h3>Swap the brain, don't spawn a tool</h3>
+                    <p>The conversation stays one continuous thread. Your Phantom keeps its persona and memory while it gains coding muscle &mdash; no context hand-off to a second agent, no losing the plot.</p>
+                </div>
+                <div class="feature">
+                    <h3>Judged in context, not in isolation</h3>
+                    <p>Routing reads the <em>recent conversation</em>, not just your last line &mdash; a recency-decayed, weighted score (in the spirit of ModSecurity CRS) with an evidence prior. So a quick &ldquo;what about the error handling?&rdquo; follow-up stays in coding mode instead of dropping the brain.</p>
+                </div>
+                <div class="feature">
+                    <h3>Self-correcting by design</h3>
+                    <p>The moment the conversation leaves code, the score falls and the Primary brain returns. No sticky mode, no getting stuck in the Coder &mdash; it earns its way in and lets go on its own.</p>
+                </div>
+            </div>
+        </section>
+
         <section class="philosophy">
             <h2>Agency by Design</h2>
             <p>We don't build boxes; we build Souls. <strong>The harness can do its own tools — let it.</strong> Phantombot provides the memory, the identity, and the connection. The harness takes it from there.</p>
@@ -95,12 +237,69 @@
             </div>
         </section>
 
+        <!-- Additive: experience compounds -->
+        <section class="compounds philosophy">
+            <h2>The older the Phantom, the wiser.</h2>
+            <p>Every Phantom keeps a private, local memory of your decisions, your lessons, your people, and your standing preferences. <strong>It doesn't reset between sessions &mdash; it accumulates.</strong></p>
+            <p>So the longer a Phantom works with you, the more it understands your work and you &mdash; and the better its judgment gets. More context, <strong>less hallucination</strong>; more history, <strong>fewer misaligned decisions</strong>; more trust earned, <strong>more confidence to act</strong>. Experience isn't a feature you toggle. It's something your Phantom <em>earns</em>.</p>
+        </section>
+
+        <!-- Additive: PhantomChat preferred channel -->
+        <section class="phantomchat">
+            <span class="channel-badge">Preferred channel</span>
+            <h2>Talk to your Phantom on PhantomChat.</h2>
+            <p class="section-intro">PhantomChat is our end-to-end-encrypted messenger built on Nostr &mdash; a private, secure home for talking to your Phantom by text or voice, on desktop and mobile. It's the channel we recommend.</p>
+            <a class="onboard-cta" href="https://chat.phantomyard.ai">Onboard at chat.phantomyard.ai &rarr;</a>
+            <div class="phantomchat-showcase">
+                <div class="terminal-window">
+                    <div class="terminal-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <span class="title">PhantomChat &mdash; light</span>
+                    </div>
+                    <div class="terminal-body">
+                        <img src="assets/img/phantomchat-light.webp" alt="A conversation with a Phantom in the PhantomChat desktop app, light theme" class="screenshot" loading="lazy">
+                    </div>
+                </div>
+                <figure class="iphone-frame iphone-frame--captioned">
+                    <img src="assets/img/phantomchat-mobile.webp" alt="The PhantomChat PWA running on a phone, showing the chat list" class="screenshot" loading="lazy">
+                </figure>
+                <div class="terminal-window">
+                    <div class="terminal-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <span class="title">PhantomChat &mdash; dark</span>
+                    </div>
+                    <div class="terminal-body">
+                        <img src="assets/img/phantomchat-dark.webp" alt="A conversation with a Phantom in the PhantomChat desktop app, dark theme" class="screenshot" loading="lazy">
+                    </div>
+                </div>
+            </div>
+            <p class="channel-note">Prefer Telegram? It's still a <strong>first-class, fully supported</strong> channel &mdash; see below. Use whichever fits your day; your Phantom is the same on both.</p>
+        </section>
+
         <section class="telegram-preview">
             <h2>Command from anywhere.</h2>
             <p>Seamlessly integrated with Telegram. Talk to your agents via text or voice. Command your digital world from your pocket.</p>
-            <div class="iphone-frame">
-                <img src="assets/img/telegram-interaction.png" alt="Telegram Interaction" class="screenshot">
+            <div class="telegram-showcase">
+                <div class="terminal-window">
+                    <div class="terminal-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <span class="title">Telegram &mdash; desktop</span>
+                    </div>
+                    <div class="terminal-body">
+                        <img src="assets/img/telegram-desktop.webp" alt="A conversation with a Phantom in the Telegram desktop app" class="screenshot" loading="lazy">
+                    </div>
+                </div>
+                <figure class="iphone-frame iphone-frame--captioned">
+                    <img src="assets/img/telegram-mobile.webp" alt="Phantombot on Telegram mobile" class="screenshot" loading="lazy">
+                </figure>
             </div>
+            <p class="channel-note">Right in your pocket &mdash; text or voice, full memory and judgment, the same Phantom you talk to everywhere else.</p>
         </section>
     </main>
 
