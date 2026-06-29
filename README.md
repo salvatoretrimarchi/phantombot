@@ -395,6 +395,45 @@ Relays come from a shared canonical list and can be edited by re-running the
 command. See the [PhantomChat repo](https://github.com/phantomyard/phantomchat)
 for the app itself and the wire-protocol details.
 
+### Multiple bots in one group
+
+When several persona bots share a PhantomChat group, each one would otherwise
+answer **every** message — three bots, three replies to one question. PhantomChat
+gives you the Telegram behaviour (only the bot you addressed responds)
+**automatically, with no configuration**:
+
+- A bot replies only when its **persona name** appears in the message ("hey
+  **Lena**, …"), or when it's the bot currently holding the thread (so a no-name
+  follow-up still reaches it). Address a different bot by name and the previous
+  one falls quiet.
+- A bot **never reacts to another bot's** messages — in a group *or* a 1:1 DM —
+  so one bot's reply can't trigger another and start a back-and-forth loop. Only
+  humans drive the conversation.
+
+This works out of the box because every Phantom publishes a NIP-24 **`bot: true`**
+flag and a display name in its Nostr profile (kind-0). Each bot reads the
+profiles of the group's members, so it learns who the *other* bots are — and
+their names — straight from the protocol. Nothing to wire up; just add the bots
+to a group.
+
+**Optional override.** If you want deterministic behaviour from the very first
+message (before profiles resolve), or to force-mark a specific account as a
+sibling bot, you can still seed the roster per-persona with a `group_bots` list
+in `phantomchat.json`. It's merged with what's auto-detected:
+
+```json
+{
+  "nsec": "nsec1…",
+  "allowed_npubs": ["npub1…"],
+  "group_bots": [
+    { "name": "kai",  "npub": "npub1kai…" },
+    { "name": "robbie", "npub": "npub1robbie…" }
+  ]
+}
+```
+
+Most setups won't need it — the auto-detection covers them.
+
 ## Editors: VS Code, Zed & JetBrains
 
 Your Phantom runs **inside your editor** as a first-class agent over the

@@ -41,13 +41,21 @@ import {
   VOICE_REPLY_INSTRUCTION,
   voiceUnavailableMessage,
 } from "../core/prompts.ts";
+import { getPublicKey } from "nostr-tools/pure";
 import type { Channel, ChannelMessage } from "../core/types.ts";
+import {
+  decideGroupReply,
+  formatGroupContext,
+  GROUP_BUFFER_MAX,
+  type GroupChatState,
+  matchPersonaNames,
+} from "../core/routing.ts";
 import {
   splitIntoSegments,
   StreamSegmenter,
 } from "../streamSegmenter.ts";
 import type { ServiceControl } from "../../lib/systemd.ts";
-import type { PhantomchatTransport } from "./transport.ts";
+import type { NostrProfileMeta, PhantomchatTransport } from "./transport.ts";
 import { sttSupport, synthesize, transcribe, ttsSupported } from "../../lib/audio.ts";
 import {
   clearReplyModeOverride,
@@ -128,6 +136,34 @@ export interface RunPhantomchatServerInput {
    */
   allowedHex: string[];
   /**
+   * OPTIONAL config seed for the group-addressing roster: persona names of other
+   * bots that share groups with this one. Normally the roster is derived
+   * automatically from group members' kind-0 profiles (any member whose NIP-24
+   * `bot` flag is set contributes its display name), so this is only needed as a
+   * deterministic override / cold-start seed. Merged with the auto-derived names;
+   * this persona's own name is always included.
+   */
+  groupPersonaNames?: string[];
+  /**
+   * OPTIONAL config seed for the "ignore other bots" set: hex pubkeys of known
+   * sibling bots. Normally a sender is recognised as a bot from its kind-0
+   * `bot` flag (see `fetchProfiles`); this just force-marks specific pubkeys as
+   * bots even before their profile resolves. A message from a bot is NEVER
+   * replied to — in a group OR a 1:1 DM — which kills bot-to-bot cascades
+   * (option (a)). Merged with the auto-detected bot set.
+   */
+  siblingBotHex?: string[];
+  /**
+   * Resolve kind-0 profiles for a set of lowercased hex pubkeys → metadata. The
+   * server uses it to (a) recognise sibling bots via the NIP-24 `bot` flag so it
+   * never replies to another bot, and (b) auto-derive the group name-addressing
+   * roster from members' display names. Lazily called and cached. Production
+   * binds it to `transport.fetchProfiles`; tests inject a stub. Absent → bot
+   * detection falls back to the static `siblingBotHex` / `groupPersonaNames`
+   * config alone (the pre-auto-resolve behaviour).
+   */
+  fetchProfiles?: (authors: string[]) => Promise<Map<string, NostrProfileMeta>>;
+  /**
    * Trust-on-first-use. Only consulted when `allowedHex` is empty:
    *   - tofu true  → the FIRST sender is trusted, persisted via `persistTrust`,
    *     and the bot locks to it (every later stranger is dropped).
@@ -185,7 +221,116 @@ export async function runPhantomchatServer(
   // TOFU is armed only when we start with an empty allowlist and tofu is on.
   let tofuArmed = allowedSet.size === 0 && input.tofu === true;
 
+  // ===================== GROUP ADDRESSING + BOT DETECTION =====================
+  // Mirrors the Telegram engine (core/engine.ts): in a group, every bot
+  // receives every human message, but a bot must only SPEAK when addressed by
+  // name or when it currently holds the thread; and a bot NEVER replies to
+  // another bot (in a group OR a DM), which kills bot-to-bot cascades. The
+  // decision is computed purely from the shared human-message stream
+  // (decideGroupReply), so every bot converges with no coordination. State is
+  // per-group, in-memory.
+  const groupChats = new Map<string, GroupChatState>();
+  const selfName = input.persona;
+  // Our own hex pubkey — excluded from the roster and always treated as a bot
+  // (so the bot never replies to its own self-wrapped group echo).
+  const ourHex = getPublicKey(input.secretKey).toLowerCase();
+  // OPTIONAL config seeds (pre-auto-resolve overrides). The roster always
+  // contains our own name; sibling names/hexes are MERGED with what we resolve
+  // from members' kind-0 profiles at decision time.
+  const configRosterNames = input.groupPersonaNames ?? [];
+  const configSiblingHex = new Set(
+    (input.siblingBotHex ?? []).map((h) => h.toLowerCase()),
+  );
+
+  // ----- kind-0 profile cache (bot detection + name resolution) -----
+  // Lazily populated via input.fetchProfiles; bounded refresh so an absent
+  // profile (a human with no kind-0) isn't re-fetched on every message.
+  const PROFILE_TTL_MS = 5 * 60 * 1000;
+  const profileCache = new Map<string, NostrProfileMeta>();
+  const profileFetchedAt = new Map<string, number>();
+  const profileInFlight = new Map<string, Promise<void>>();
+
+  /** Resolve (and cache) the kind-0 profiles for `hexes`, skipping ourselves and
+   *  any pubkey fetched within PROFILE_TTL_MS. Concurrent fetches of the same
+   *  author are de-duped. Best-effort — a failed/absent fetch leaves the cache
+   *  empty for that author (treated as human/unknown by `isBot`). */
+  const ensureProfiles = async (hexes: string[]): Promise<void> => {
+    if (!input.fetchProfiles) return;
+    const now = Date.now();
+    const due = [...new Set(hexes.map((h) => h.toLowerCase()))].filter(
+      (h) => h.length > 0 && h !== ourHex &&
+        now - (profileFetchedAt.get(h) ?? 0) >= PROFILE_TTL_MS,
+    );
+    if (due.length === 0) return;
+    const toFetch = due.filter((h) => !profileInFlight.has(h));
+    if (toFetch.length > 0) {
+      const p = (async () => {
+        try {
+          const got = await input.fetchProfiles!(toFetch);
+          const t = Date.now();
+          for (const h of toFetch) {
+            profileFetchedAt.set(h, t);
+            const meta = got.get(h);
+            if (meta) profileCache.set(h, meta);
+          }
+        } catch (e) {
+          log.warn("phantomchat: profile fetch failed (non-fatal)", {
+            error: (e as Error).message,
+          });
+        }
+      })();
+      for (const h of toFetch) profileInFlight.set(h, p);
+      void p.finally(() => {
+        for (const h of toFetch) {
+          if (profileInFlight.get(h) === p) profileInFlight.delete(h);
+        }
+      });
+    }
+    await Promise.all(
+      due.map((h) => profileInFlight.get(h)).filter((x): x is Promise<void> => !!x),
+    );
+  };
+
+  /** Is `hex` a bot? True for ourselves, any configured sibling, or any pubkey
+   *  whose resolved kind-0 carries the NIP-24 `bot` flag. */
+  const isBot = (hex: string): boolean => {
+    const h = hex.toLowerCase();
+    if (h === ourHex || configSiblingHex.has(h)) return true;
+    return profileCache.get(h)?.bot === true;
+  };
+
+  /** Build the group name-addressing roster for a message: our own name + any
+   *  configured sibling names + the display names of every OTHER member resolved
+   *  as a bot. Deduped case-insensitively, order preserved. */
+  const buildRoster = (memberHexes: string[]): string[] => {
+    const names = [selfName, ...configRosterNames];
+    for (const hex of memberHexes) {
+      const h = hex.toLowerCase();
+      if (h === ourHex) continue;
+      const meta = profileCache.get(h);
+      if (meta?.bot === true) {
+        const n = meta.name || meta.display_name;
+        if (n) names.push(n);
+      }
+    }
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const n of names) {
+      const k = n.toLowerCase();
+      if (n.length === 0 || seen.has(k)) continue;
+      seen.add(k);
+      out.push(n);
+    }
+    return out;
+  };
+
   // ===================== CACHE WARMING =====================
+  // Warm the profile cache for known peers so a DM partner's bot-status is known
+  // before their first message (avoids a cold-start fetch gating the first
+  // reply). Fire-and-forget; group members are resolved lazily on first message.
+  if (input.fetchProfiles && allowedSet.size > 0) {
+    void ensureProfiles([...allowedSet]).catch(() => {});
+  }
   // Pre-derive symmetric keys for all allowed peers so inbound v2 DMs
   // (which use ephemeral envelope signing) can be decrypted immediately.
   // Fire-and-forget: keys derived after the first unwrap will be picked up
@@ -262,6 +407,101 @@ export async function runPhantomchatServer(
     const senderHex = msg.senderId;
 
     if (!authorize(msg)) return;
+
+    // ===================== PROFILE RESOLUTION + BOT GATE =====================
+    // Resolve the kind-0 profiles this decision needs: always the sender (for the
+    // global bot-gate just below) and, for a group, every member (to auto-derive
+    // the name roster). Lazy + cached, so a warm cache makes this a no-op. The
+    // await only populates the cache — the per-group state mutation further down
+    // stays a single synchronous (atomic) read-modify-write.
+    const memberHexes = msg.groupId ? msg.groupMemberHexes ?? [] : [];
+    await ensureProfiles([senderHex, ...memberHexes]);
+
+    // GLOBAL cascade kill (option (a)): a bot NEVER replies to another bot — in a
+    // group OR a 1:1 DM. A sender is a bot if its kind-0 carries the NIP-24 `bot`
+    // flag (or it's a configured sibling / ourselves). Only humans drive
+    // conversation, so a bot's own reply can't trigger another. Drop silently —
+    // no receipt, no state change — exactly like a non-allowed sender.
+    if (isBot(senderHex)) {
+      log.info("phantomchat: ignoring message from a bot", {
+        persona: input.persona,
+        ...(msg.groupId ? { group: msg.groupId } : {}),
+        sender: senderHex.slice(0, 12) + "…",
+      });
+      return;
+    }
+
+    // ===================== GROUP ADDRESSING GATE =====================
+    // Only for group messages, and only when this bot shares the group with at
+    // least one OTHER bot. Decide — from the shared human message stream —
+    // whether THIS bot should reply, mirroring core/engine.ts. Runs BEFORE the
+    // (paid) voice/media pipeline so a message aimed at another bot costs no STT.
+    // The read-modify-write of the per-group state below is await-free, so it's
+    // atomic against other peers' interleaved turns (JS single thread).
+    let groupContext: string | undefined;
+    if (msg.groupId) {
+      // Auto-derived roster: our own name + configured siblings + the display
+      // names of every member resolved as a bot. The gate engages ONLY when
+      // another bot is actually present — a lone bot in a group answers
+      // everything (Telegram single-bot behaviour), so this can't make an
+      // existing single-bot deployment go mute.
+      const roster = buildRoster(memberHexes);
+      const otherBotPresent =
+        roster.length > 1 ||
+        memberHexes.some((h) => h.toLowerCase() !== ourHex && isBot(h));
+      if (otherBotPresent) {
+        const state =
+          groupChats.get(msg.conversationId) ?? { lastAddressed: [], buffer: [] };
+        // Route on the message text. A bare media message (e.g. a group voice
+        // note) has empty text, so it continues the current thread rather than
+        // re-addressing — same as Telegram routing on text/caption only.
+        const matchText = msg.text ?? "";
+        const matched = matchPersonaNames(matchText, roster);
+        const decision = decideGroupReply({
+          self: selfName,
+          matched,
+          lastAddressed: state.lastAddressed,
+        });
+        state.lastAddressed = decision.nextLastAddressed;
+
+        // What to keep in the rolling buffer for context catch-up. Text keeps its
+        // words; a media message keeps a short label so the thread stays coherent.
+        const bufText =
+          matchText.trim().length > 0
+            ? matchText.trim()
+            : msg.media
+              ? `[${msg.media.kind}]`
+              : "";
+        // No usernames on Nostr — label the buffer entry by the short sender hex.
+        const fromLabel = senderHex.slice(0, 8) + "…";
+
+        if (!decision.reply) {
+          if (bufText.length > 0) {
+            state.buffer.push({ from: fromLabel, text: bufText, delivered: false });
+          }
+          while (state.buffer.length > GROUP_BUFFER_MAX) state.buffer.shift();
+          groupChats.set(msg.conversationId, state);
+          log.info("phantomchat: group message not for this bot — staying quiet", {
+            persona: input.persona,
+            group: msg.groupId,
+            matched,
+            lastAddressed: state.lastAddressed,
+          });
+          return;
+        }
+
+        // We're replying: hand the harness the messages we observed but stayed
+        // quiet through as a context preamble, then mark the buffer delivered.
+        const undelivered = state.buffer.filter((e) => !e.delivered);
+        groupContext = formatGroupContext(undelivered) || undefined;
+        for (const e of state.buffer) e.delivered = true;
+        if (bufText.length > 0) {
+          state.buffer.push({ from: fromLabel, text: bufText, delivered: true });
+        }
+        while (state.buffer.length > GROUP_BUFFER_MAX) state.buffer.shift();
+        groupChats.set(msg.conversationId, state);
+      }
+    }
 
     // ===================== DELIVERY RECEIPT =====================
     // The sender just passed the auth gate, so acknowledging receipt to them is
@@ -391,6 +631,16 @@ export async function runPhantomchatServer(
           }
         }
       }
+    }
+
+    // Group catch-up context goes at the very TOP of the turn input so the
+    // harness reads the room (messages this bot saw but stayed quiet through)
+    // before the specific message it's answering. Mirrors core/engine.ts.
+    if (groupContext) {
+      userMessage =
+        userMessage.length > 0
+          ? `${groupContext}\n\n${userMessage}`
+          : groupContext;
     }
 
     // A sender that PASSES the allowlist is a trusted principal — exactly the
