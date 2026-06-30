@@ -70,22 +70,6 @@ export interface SignedEvent extends UnsignedEvent {
 }
 
 /**
- * Inner rumor kind for gift-wrapped typing / voice indicators. MUST stay in
- * lockstep with the PWA's `NOSTR_KIND_TYPING_RUMOR`
- * (phantomchat src/lib/phantomchat/nostr-crypto.ts).
- *
- * Typing ticks are gift-wrapped (NIP-59 / kind-1059) for privacy like DMs, but
- * the INNER rumor must NOT reuse the message kind-14: sharing it made a tick
- * indistinguishable from a chat message except by sniffing content ('stop' /
- * 'recording' / ''), so a replayed tick could render as a "Stopped" bubble on
- * the PWA and the bot's own inbound could enqueue 'stop' as a message turn.
- * A dedicated kind makes the distinction STRUCTURAL — route/drop on rumor.kind,
- * never on content. 1414 is a regular (non-ephemeral) kind, unassigned by any
- * NIP, and only ever exists encrypted inside a kind-1059 wrap.
- */
-export const NOSTR_KIND_TYPING_RUMOR = 1414;
-
-/**
  * In-memory conversation-key cache, keyed by sender secret-key OBJECT identity
  * (a WeakMap) → recipient hex → derived NIP-44 conversation key. Keying on the
  * Uint8Array object (not its hex) keeps the private key from being materialized
@@ -612,11 +596,10 @@ export function createRumor(
   content: string,
   senderSk: Uint8Array,
   tags?: string[][],
-  kind: number = 14,
 ): UnsignedEvent {
   const pubkey = getPublicKey(senderSk);
   const event = {
-    kind,
+    kind: 14,
     created_at: Math.floor(Date.now() / 1000),
     tags: tags || [],
     content,
@@ -679,74 +662,6 @@ export function createGiftWrap(
   };
 
   return finalizeEvent(wrapTemplate, ephemeralSk) as unknown as SignedEvent;
-}
-
-// ==================== Typing Gift-Wrap ====================
-
-/**
- * Wrap a typing indicator in a NIP-17 gift-wrap (kind-1059).
- *
- * Creates a kind-14 rumor with the typing content and a ['d', conversationId]
- * tag, seals it, and gift-wraps it with an ephemeral key. The outer kind-1059
- * event carries ['expiration', now+30] for relay-side auto-pruning.
- *
- * The inner kind-14 is encrypted — the relay never sees it, so there's no
- * kind collision risk. The outer event is signed with a throwaway ephemeral
- * key (NIP-17 parity), so the relay can't build a sender→recipient social
- * graph from signed pubkey edges.
- */
-export function wrapTypingGiftWrap(
-  senderSk: Uint8Array,
-  recipientPubHex: string,
-  content: string,
-  conversationId: string,
-): NTNostrEvent {
-  const rumor = createRumor(content, senderSk, [["d", conversationId]], NOSTR_KIND_TYPING_RUMOR);
-  const seal = createSeal(rumor, senderSk, recipientPubHex);
-
-  const ephemeralSk = generateSecretKey();
-  const convKey = getConversationKey(ephemeralSk, recipientPubHex);
-  const encryptedContent = nip44Encrypt(JSON.stringify(seal), convKey);
-  const now = Math.floor(Date.now() / 1000);
-  const wrapTemplate = {
-    kind: 1059,
-    created_at: now,
-    // ['t', 'typing'] marker on the outer wrap lets relays and receivers
-    // distinguish typing gift-wraps from message gift-wraps without decryption.
-    tags: [["p", recipientPubHex], ["expiration", String(now + 30)], ["t", "typing"]],
-    content: encryptedContent,
-  };
-  return finalizeEvent(wrapTemplate, ephemeralSk) as unknown as NTNostrEvent;
-}
-
-/**
- * Wrap a group typing indicator in NIP-17 gift-wraps for multiple members.
- *
- * Creates a single kind-14 rumor with ['d', groupId] and ['group', groupId]
- * tags, then wraps it separately for each member with an ephemeral key.
- */
-export function wrapGroupTypingGiftWrap(
-  senderSk: Uint8Array,
-  memberPubkeys: string[],
-  content: string,
-  groupId: string,
-): NTNostrEvent[] {
-  const rumor = createRumor(content, senderSk, [["d", groupId], ["group", groupId]], NOSTR_KIND_TYPING_RUMOR);
-  const now = Math.floor(Date.now() / 1000);
-
-  return memberPubkeys.map((recipientPk) => {
-    const seal = createSeal(rumor, senderSk, recipientPk);
-    const ephemeralSk = generateSecretKey();
-    const convKey = getConversationKey(ephemeralSk, recipientPk);
-    const encryptedContent = nip44Encrypt(JSON.stringify(seal), convKey);
-    const wrapTemplate = {
-      kind: 1059,
-      created_at: now,
-      tags: [["p", recipientPk], ["expiration", String(now + 30)], ["t", "typing"]],
-      content: encryptedContent,
-    };
-    return finalizeEvent(wrapTemplate, ephemeralSk) as unknown as NTNostrEvent;
-  });
 }
 
 // ==================== Base64url helpers (NIP-44 compatible) ====================
