@@ -36,10 +36,16 @@ import { cleanupStaleUpdateArtifacts } from "../lib/binaryUpdate.ts";
 import { npubEncode } from "../lib/nostrIdentity.ts";
 import {
   type Config,
+  DEFAULT_P2P,
   loadConfig,
   personaDir,
   type TelegramAccount,
 } from "../config.ts";
+import {
+  advertiseP2PCapability,
+  buildP2PNode,
+  startP2PNode,
+} from "../p2p/index.ts";
 import { buildHarnessChain } from "../harnesses/buildChain.ts";
 import {
   resolveHarnessBinsForConfig,
@@ -559,6 +565,12 @@ export async function runRun(input: RunInput = {}): Promise<number> {
         );
       }
 
+      // The relay-free P2P node (phantombot#258) binds a single loopback port
+      // (config.p2p.port), so exactly ONE persona hosts it — the first
+      // phantomchat persona. Disabled by default; see config.p2p.
+      const p2pSettings = config.p2p ?? DEFAULT_P2P;
+      let p2pNodeStarted = false;
+
       for (const spec of phantomchatPersonas) {
         const { identity, allowedHex, tofu, groupBots } = spec.config;
 
@@ -765,6 +777,42 @@ export async function runRun(input: RunInput = {}): Promise<number> {
               error: (e as Error).message,
             });
           });
+        }
+
+        // Relay-free P2P transport node. Rides THIS persona's identity, relays
+        // and relay pool: a loopback ws bridge for the same-machine PhantomChat
+        // PWA plus werift WebRTC channels to peer nodes, with Nostr carrying only
+        // the WebRTC handshake. Started for the first phantomchat persona only
+        // (single loopback port). Inert unless config.p2p.enabled.
+        if (p2pSettings.enabled && !p2pNodeStarted) {
+          const p2pDeps = {
+            secretKey: identity.secretKey,
+            publicKeyHex: identity.publicKeyHex,
+            relays,
+            pool: pool as unknown as Parameters<typeof buildP2PNode>[0]["pool"],
+            settings: p2pSettings,
+          };
+          const p2pNode = buildP2PNode(p2pDeps);
+          // Start SYNCHRONOUSLY and contain any port-conflict throw inside the
+          // helper, so a failed P2P bring-up degrades to relays instead of
+          // rejecting a pushed task and aborting the whole `run` process.
+          const p2pTask = startP2PNode({
+            node: p2pNode,
+            advertise: () => advertiseP2PCapability(p2pDeps),
+            signal: ac.signal,
+            out,
+            err,
+            persona: spec.persona,
+            port: p2pSettings.port,
+          });
+          if (p2pTask) {
+            p2pNodeStarted = true;
+            tasks.push(p2pTask);
+          }
+        } else if (p2pSettings.enabled && p2pNodeStarted) {
+          out.write(
+            `  [p2p:${spec.persona}] skipped — a P2P node is already bound to port ${p2pSettings.port}\n`,
+          );
         }
       }
     }
