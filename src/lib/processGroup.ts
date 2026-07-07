@@ -37,7 +37,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { delimiter, dirname, isAbsolute } from "node:path";
+import { basename, delimiter, dirname, isAbsolute } from "node:path";
 import type { Subprocess, SpawnOptions } from "bun";
 import { log } from "./logger.ts";
 
@@ -93,6 +93,120 @@ export function withCommandDirOnPath(
 }
 
 /**
+ * Ensure phantombot's OWN executable directory is on the child's PATH.
+ *
+ * Why this exists (the Windows "phantombot: command not found" bug,
+ * 2026-07-07): a harness turn spawns tool subprocesses — notably the agent's
+ * Bash tool — that call back into the `phantombot` CLI (`phantombot memory
+ * search`, `phantombot task add`, `phantombot notify`, ...). Those shells
+ * inherit the harness's env/PATH. On Windows the daemon is launched by a
+ * Scheduled Task whose environment carries only the *machine* PATH, while the
+ * phantombot install dir is registered on the *user* PATH — so the CLI is
+ * invisible to the spawned shell and every self-call dies with exit 127 /
+ * "phantombot: command not found". (The same class bites any launch context
+ * with a narrower PATH than the interactive session the install dir lives in.)
+ *
+ * The install dir is not on any reliably-inherited PATH, but it IS
+ * `dirname(process.execPath)` whenever phantombot runs as its compiled
+ * single-file binary. Prepend that dir to the child PATH so the agent's shell
+ * can always find the CLI, no matter how the daemon was launched. Same spirit
+ * as withCommandDirOnPath (#240), but for phantombot's own binary rather than
+ * the harness's.
+ *
+ * Guarded: only acts when the running executable is the phantombot binary
+ * itself (not `bun`/`node` running a source checkout), so a dev run never gets
+ * the runtime's dir injected. No-op when the dir is already present. Returns a
+ * FRESH object; never mutates the caller's env (may be shared `process.env`).
+ *
+ * Exported for testing.
+ */
+export function withPhantombotBinDirOnPath(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const exe = process.execPath;
+  if (!exe || !isAbsolute(exe)) return env;
+  // Only when running AS the compiled phantombot binary — under `bun run`/
+  // `node` from source, execPath is the runtime and its dir must NOT be
+  // injected (would shadow nothing useful and add noise). The compiled binary
+  // is named `phantombot` / `phantombot.exe`.
+  const base = basename(exe).toLowerCase();
+  if (!base.startsWith("phantombot")) return env;
+  const binDir = dirname(exe);
+  const currentPath = env.PATH ?? "";
+  const entries = currentPath.split(delimiter);
+  if (entries.includes(binDir)) return env;
+  return {
+    ...env,
+    PATH: currentPath ? `${binDir}${delimiter}${currentPath}` : binDir,
+  };
+}
+
+/**
+ * Process-wide set of directories that hold RESOLVED harness binaries
+ * (`pi`, `claude`, `gemini`, `codex`), recorded by `resolveHarnessBinsForConfig`
+ * at each entry point (run / nightly / tick / ask / acp) the moment it resolves
+ * every configured harness to an absolute path.
+ *
+ * Why this exists (the Windows "pi/claude not on the agent's PATH" gap,
+ * 2026-07-07): `withCommandDirOnPath` only puts the CURRENTLY-spawning harness's
+ * own dir on the child PATH — enough for that harness's shebang, but not enough
+ * for the agent's Bash tool to invoke a *sibling* harness by bare name
+ * (`pi ...`, `claude ...`, a delegate, a user smoke-test). phantombot resolves
+ * each harness to an absolute path and spawns it directly, so it never needed
+ * the harness dirs on PATH itself — but the shells it spawns do, and on Windows
+ * the Scheduled-Task daemon inherits only the machine PATH (the pi-node / npm
+ * dirs live on the user PATH). That's the band-aid we had to add to the machine
+ * PATH by hand; recording the dirs here makes it travel with the code.
+ *
+ * Populated once per process (bins are resolved at startup); a Set de-dupes and
+ * keeps the common current-harness dir from piling up. Only absolute bins
+ * contribute a dir — a bare, unresolved name has no meaningful directory.
+ */
+const harnessBinDirs = new Set<string>();
+
+/**
+ * Record the directories of resolved harness binaries so `spawnInNewSession`
+ * can prepend them to every harness child's PATH. Called by
+ * `resolveHarnessBinsForConfig` with the absolute bins it just resolved.
+ * Bare/relative names are ignored (no meaningful dir).
+ */
+export function recordHarnessBinDirs(bins: Iterable<string>): void {
+  for (const bin of bins) {
+    if (bin && isAbsolute(bin)) harnessBinDirs.add(dirname(bin));
+  }
+}
+
+/** Test-only: reset the recorded harness dirs between cases. */
+export function clearHarnessBinDirs(): void {
+  harnessBinDirs.clear();
+}
+
+/**
+ * Prepend every recorded harness bin dir (see `harnessBinDirs`) to the child's
+ * PATH so the agent's Bash tool can invoke `pi`/`claude`/`gemini`/`codex` by
+ * bare name regardless of how narrow the launcher's PATH was. Dirs already on
+ * PATH (e.g. the current harness's own dir, added by `withCommandDirOnPath`) are
+ * skipped, so nothing is duplicated. Returns a FRESH object; never mutates the
+ * caller's env. No-op when nothing was recorded or all dirs are already present.
+ *
+ * Exported for testing.
+ */
+export function withHarnessBinDirsOnPath(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  if (harnessBinDirs.size === 0) return env;
+  const currentPath = env.PATH ?? "";
+  const present = new Set(currentPath.split(delimiter));
+  const missing = [...harnessBinDirs].filter((dir) => !present.has(dir));
+  if (missing.length === 0) return env;
+  const prefix = missing.join(delimiter);
+  return {
+    ...env,
+    PATH: currentPath ? `${prefix}${delimiter}${currentPath}` : prefix,
+  };
+}
+
+/**
  * Spawn a subprocess as the leader of a fresh process group/session.
  *
  * Identical to `Bun.spawn` except the resulting process's `pid` doubles
@@ -115,8 +229,25 @@ export function spawnInNewSession<
   // nvm/fnm/volta install) so the interpreter resolves under a narrow systemd
   // PATH exactly as it does under a desktop/editor session. See
   // withCommandDirOnPath for the full rationale (exit-127 bug, 2026-07-01).
+  // Two PATH augmentations, both copy-on-write:
+  //  1. withCommandDirOnPath — the HARNESS binary's own dir, so a
+  //     `#!/usr/bin/env node` shebang finds its interpreter (exit-127, #240).
+  //  2. withPhantombotBinDirOnPath — PHANTOMBOT's own install dir, so the
+  //     agent's Bash tool can call back into the `phantombot` CLI even when the
+  //     daemon was launched with a narrow PATH (Windows Scheduled Task /
+  //     machine-PATH-only, "phantombot: command not found", 2026-07-07).
+  //  3. withHarnessBinDirsOnPath — the dirs of every RESOLVED harness binary
+  //     (pi/claude/gemini/codex), so the agent's Bash tool can invoke a sibling
+  //     harness by bare name too, retiring the machine-PATH band-aid (same day).
   const env = opts.env
-    ? withCommandDirOnPath(cmd[0]!, opts.env as Record<string, string | undefined>)
+    ? withHarnessBinDirsOnPath(
+        withPhantombotBinDirOnPath(
+          withCommandDirOnPath(
+            cmd[0]!,
+            opts.env as Record<string, string | undefined>,
+          ),
+        ),
+      )
     : opts.env;
   return Bun.spawn(cmd, {
     ...opts,
@@ -131,6 +262,12 @@ export function spawnInNewSession<
     // observing the child's exit, leaving `proc.exited` permanently unresolved
     // (killProcessGroup would then hang). So we only detach on POSIX.
     detached: process.platform !== "win32",
+    // Windows only (issue #271): suppress the console window Windows opens for
+    // every child of a GUI/service process. Without it, each harness turn (and
+    // each tool subprocess it spawns) flashes a cmd/console window on the
+    // desktop. No-op on POSIX. Covers all four harnesses (claude/gemini/codex/pi)
+    // in one place since they all spawn through here.
+    windowsHide: true,
   } as typeof opts) as Subprocess<Stdin, Stdout, Stderr>;
 }
 
@@ -233,6 +370,9 @@ function windowsKillTree(pid: number): boolean {
   try {
     execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
       stdio: "ignore",
+      // Suppress the taskkill console window that would otherwise flash on every
+      // process-group teardown (issue #271).
+      windowsHide: true,
     });
     return true;
   } catch (e) {
