@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -119,5 +119,22 @@ describe("reply mode overrides", () => {
     expect(
       await getReplyModeOverride({ persona: "kai", conversation: "telegram:1" }),
     ).toBeUndefined();
+  });
+
+  test("a corrupt overrides file reads as empty and self-heals on next save", async () => {
+    await writeFile(replyModeStatePath(), '{"truncated', "utf8");
+
+    expect(
+      await touchReplyModeOverride({ persona: "kai", conversation: "telegram:1" }),
+    ).toBeUndefined();
+
+    await setReplyModeOverride({
+      persona: "kai",
+      conversation: "telegram:1",
+      mode: "voice",
+    });
+    expect(
+      await getReplyModeOverride({ persona: "kai", conversation: "telegram:1" }),
+    ).toBe("voice");
   });
 });

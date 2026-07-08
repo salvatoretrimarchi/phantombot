@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { xdgStateHome } from "../config.ts";
+import { log } from "./logger.ts";
 
 export type ReplyMode = "text" | "voice";
 export type ReplyModeRequest = ReplyMode | "default";
@@ -40,6 +41,12 @@ function key(persona: string, conversation: string): string {
   return `${persona}\u0000${conversation}`;
 }
 
+/**
+ * A corrupt/unreadable overrides file degrades to empty rather than throwing:
+ * overrides are ephemeral (10-min TTL) and the file self-heals on the next
+ * save(). Throwing here would abort every incoming message (engine.ts calls
+ * touchReplyModeOverride outside any try) until the file is deleted by hand.
+ */
 async function load(path = replyModeStatePath()): Promise<StoredOverrides> {
   try {
     const parsed = JSON.parse(await readFile(path, "utf8"));
@@ -47,8 +54,13 @@ async function load(path = replyModeStatePath()): Promise<StoredOverrides> {
       ? (parsed as StoredOverrides)
       : {};
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw e;
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn("replyMode: overrides file unreadable, treating as empty", {
+        error: (e as Error).message,
+        path,
+      });
+    }
+    return {};
   }
 }
 

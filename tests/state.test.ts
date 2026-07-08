@@ -57,6 +57,11 @@ describe("saveState — round-trip", () => {
     await saveState({ default_persona: "kai" });
     expect(await loadState()).toEqual({ default_persona: "kai" });
   });
+
+  test("loadState treats a malformed state.json as empty instead of throwing", async () => {
+    await writeFile(stateFile, '{"default_persona": "kai"', "utf8");
+    expect(await loadState()).toEqual({});
+  });
 });
 
 describe("saveHarnessBins", () => {

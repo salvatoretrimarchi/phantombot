@@ -12,6 +12,7 @@
 import { mkdir, readFile, writeFile, appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { xdgDataHome } from "./config.ts";
+import { log } from "./lib/logger.ts";
 
 export interface State {
   default_persona?: string;
@@ -25,14 +26,25 @@ export function statePath(): string {
   );
 }
 
+/**
+ * A corrupt/unreadable state.json degrades to empty rather than throwing:
+ * loadConfig() calls this unguarded on nearly every command, so throwing
+ * would brick the whole CLI — including the persona/config commands whose
+ * writes are the only way to repair a bad file.
+ */
 export async function loadState(): Promise<State> {
   try {
     const content = await readFile(statePath(), "utf8");
     const parsed = JSON.parse(content);
     return typeof parsed === "object" && parsed !== null ? parsed : {};
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw e;
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn("state: state.json unreadable, treating as empty", {
+        error: (e as Error).message,
+        path: statePath(),
+      });
+    }
+    return {};
   }
 }
 
