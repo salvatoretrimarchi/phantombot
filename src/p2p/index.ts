@@ -10,13 +10,13 @@ import { log } from "../lib/logger.ts";
 import type { P2PSettings } from "../config.ts";
 import type { RelayPool } from "../channels/phantomchat/transport.ts";
 import { buildCapabilityEvent, publishCapability } from "./capability.ts";
+import type { ChannelBridge } from "./channelBridge.ts";
 import { installIceErrorGuard } from "./iceErrorGuard.ts";
-import { LocalBridge } from "./localBridge.ts";
 import { P2PNode } from "./node.ts";
 import { NostrSignaling } from "./signaling.ts";
 
 export { P2PNode } from "./node.ts";
-export { DEFAULT_LOCAL_NODE_PORT } from "./frame.ts";
+export { ChannelBridge } from "./channelBridge.ts";
 export type { NodeCapabilities } from "./capability.ts";
 
 export interface BuildP2PNodeDeps {
@@ -28,8 +28,16 @@ export interface BuildP2PNodeDeps {
   relays: string[];
   /** The relay pool to ride (reuse the persona's existing SimplePool). */
   pool: RelayPool;
-  /** Resolved P2P settings (port + STUN). */
+  /** Resolved P2P settings (STUN servers, enabled flag). */
   settings: P2PSettings;
+  /**
+   * The in-process bridge to the persona's phantomchat channel. Created before
+   * the node so the channel + transport can be wired to it at construction; the
+   * node injects its outbound router into it here. Replaces the old ws
+   * `LocalBridge` — a headless persona has no co-located browser, so its "local
+   * side" is its own channel (see channelBridge.ts).
+   */
+  bridge: ChannelBridge;
 }
 
 /** Assemble a ready-to-start P2P node from a persona's identity + relays. */
@@ -40,25 +48,22 @@ export function buildP2PNode(deps: BuildP2PNodeDeps): P2PNode {
     ourPubHex: deps.publicKeyHex,
     iceServers,
     signaling,
-    createBridge: (onOutbound) =>
-      new LocalBridge({
-        port: deps.settings.port,
-        onOutbound,
-        allowedOrigins: deps.settings.allowedOrigins,
-      }),
+    createBridge: (onOutbound) => {
+      // Inject the node's router into the pre-made channel bridge and hand it
+      // back as the node's BridgePort. No socket is opened.
+      deps.bridge.setRouter(onOutbound);
+      return deps.bridge;
+    },
   });
 }
 
 /**
  * Publish this node's capability advertisement once. Best-effort and detached
- * from startup — a relay hiccup must never delay the node coming up.
- *
- * `boundPort` is the node's ACTUAL bound loopback port (`node.boundPort`), read
- * AFTER `start()` so an OS-ephemeral bind (`port: 0`) advertises the real bound
- * port (plaintext) rather than the configured request.
+ * from startup — a relay hiccup must never delay the node coming up. Post-#61
+ * the advert is a single `{ webrtc: true }` boolean (no loopback port).
  */
-export function advertiseP2PCapability(deps: BuildP2PNodeDeps, boundPort: number): void {
-  const event = buildCapabilityEvent(deps.secretKey, boundPort);
+export function advertiseP2PCapability(deps: BuildP2PNodeDeps): void {
+  const event = buildCapabilityEvent(deps.secretKey);
   void publishCapability(deps.pool, deps.relays, event).catch((err) => {
     log.debug(`[p2p] capability advertise failed: ${String(err)}`);
   });
@@ -87,11 +92,8 @@ export async function keepP2PNodeAlive(node: P2PNode, signal: AbortSignal): Prom
 
 export interface StartP2PNodeInput {
   node: P2PNode;
-  /**
-   * Publish the capability advert — only after a successful start. Receives the
-   * node's actual bound loopback port (OS-ephemeral, known post-start).
-   */
-  advertise: (boundPort: number) => void;
+  /** Publish the capability advert — only after a successful start. */
+  advertise: () => void;
   signal: AbortSignal;
   out: { write: (s: string) => void };
   err: { write: (s: string) => void };
@@ -114,7 +116,7 @@ export function startP2PNode(input: StartP2PNodeInput): Promise<void> | null {
   // Install the scoped guard before any peer connection can open a socket.
   installIceErrorGuard();
   try {
-    input.node.start(); // synchronous; throws if a fixed loopback port is in use
+    input.node.start(); // synchronous; contains any signaling bring-up throw
   } catch (e) {
     log.warn(`p2p[${input.persona}]: node failed to start`, {
       error: (e as Error).message,
@@ -129,10 +131,9 @@ export function startP2PNode(input: StartP2PNodeInput): Promise<void> | null {
     }
     return null;
   }
-  const boundPort = input.node.boundPort;
-  input.advertise(boundPort);
+  input.advertise();
   input.out.write(
-    `  [p2p:${input.persona}] node on ws://127.0.0.1:${boundPort}\n`,
+    `  [p2p:${input.persona}] WebRTC node up (relay fallback active)\n`,
   );
   return keepP2PNodeAlive(input.node, input.signal);
 }
