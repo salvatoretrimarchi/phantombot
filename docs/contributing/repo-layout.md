@@ -121,11 +121,12 @@ phantombot/
 │   │   ├── stdinTap.ts stdinHandover.ts prompts.ts  # the tapped stdin Ink reads, lending the real stdin to a borrower, and the host bracket around it
 │   │   ├── terminal.ts       # alternate screen, window size, the gated stdout and forceRepaint
 │   │   ├── transcript.ts markdown.ts scroll.ts  # the conversation, markdown and tall screens as ROWS clipped to the window
-│   │   ├── textInput.ts      # one keystroke chunk applied to a text field (a newline inside a chunk submits the text before it, never lands in the value)
+│   │   ├── lineEditor.ts     # THE editor behind every one-line typed value and the chat's editing keys and typed text: a key event + a field in, the next field out (`editKey`), typed chunks at the cursor (`applyTextChunkAt`; `typeMultiline` for the chat, which keeps its lines; `multilineSteps` for the identity editor's own buffer), the cursor cell for drawing. Pure; built on promptBox.ts
+│   │   ├── useTextField.ts useRawKey.ts  # a field as React state read from a ref, and the one way a key reaches it (`feedField`); the bytes behind a key, which tell Delete from Backspace
 │   │   ├── logBuffer.ts logSources.ts  # the log pane: a bounded ring of captured lines + every host log stream (#478)
 │   │   ├── brainFlow.ts channelsFlow.ts memoryFlow.ts voiceFlow.ts decisionModelFlow.ts  # settings rows as SCREEN questions; the writes stay the CLI's
 │   │   ├── mcpFlow.ts        # the MCP row: lists from the registry file only (no network), probes one server per row under its own deadline; same registry readers/writers as `phantombot mcp`
-│   │   ├── components/       # Frame, Selectable, Menu, Spinner, personaQuestions — no component knows the terminal width
+│   │   ├── components/       # Frame, Selectable, Menu, Spinner, FieldText (a value drawn with its cursor), personaQuestions — no component knows the terminal width
 │   │   ├── screens/          # Chat, Wizard, Dashboard, PersonaDetail / NewPersona / CreatePersona, Keys, Doctor, Mcp, System, Reembed, BrainTest, FileEditor, and the question screens Ask / Choose / MultiChoose / SearchList / Confirm
 │   │   ├── slash.ts          # what the chat screen ADVERTISES as slash commands — derived from TELEGRAM_BOT_COMMANDS, never retyped
 │   │   └── snapshot.ts actions.ts  # read-only state snapshot + writes AND their consequences

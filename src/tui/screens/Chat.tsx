@@ -63,27 +63,17 @@ import {
   stashDroppedImages,
   withAttachedImages,
 } from "../imageDrop.ts";
+import { carriesKeys, editKey, typeMultiline } from "../lineEditor.ts";
 import {
-  backspaceAtCursor,
   cursorDown,
-  cursorLeft,
-  cursorLineEnd,
-  cursorLineStart,
-  cursorRight,
   cursorUp,
-  cursorWordLeft,
-  cursorWordRight,
-  deleteAtCursor,
-  deleteToLineStart,
-  deleteWhitespaceWordLeft,
-  deleteWordLeft,
-  deleteWordRight,
   graphemeCount,
   insertAtCursor,
   promptRows,
   promptState,
   type PromptState,
 } from "../promptBox.ts";
+import { useRawKey } from "../useRawKey.ts";
 import type {
   ChatMessage,
   ChatSession,
@@ -249,13 +239,14 @@ function Activity(props: {
 
 /**
  * Whether a chunk is plain text that goes into the box as typed: no key with a
- * meaning of its own, no modifier and no line break. Only such chunks join a
- * run that may turn out to be a dropped image (#729).
+ * meaning of its own, no modifier, and no key carried inside it either (a line
+ * break, a Backspace that landed in the same read: `carriesKeys`). Only such
+ * chunks join a run that may turn out to be a dropped image (#729).
  */
 function isPlainText(char: string, key: Key): boolean {
   return (
     char !== "" &&
-    !/[\r\n]/.test(char) &&
+    !carriesKeys(char) &&
     !key.ctrl &&
     !key.meta &&
     !key.super &&
@@ -460,7 +451,9 @@ export function ChatScreen(props: {
       // A run the box has moved on from is judged (and found stale) first.
       if (run && !joins) settleDropRun();
       const before = joins ? run.before : inputRef.current;
-      const after = insertAtCursor(inputRef.current, chunk);
+      // Through the shared editor, like every chunk typed into this box: a tab
+      // goes in as spaces, never as a raw tab.
+      const after = typeMultiline(inputRef.current, chunk);
       setInputValue(after);
       const next = {
         before,
@@ -557,6 +550,8 @@ export function ChatScreen(props: {
     // Mount-only by design; see above.
   }, []);
 
+  // Called BEFORE the `useInput` below, so its listener runs first (useRawKey).
+  const rawKey = useRawKey();
   useInput((char, key) => {
     // Any key but plain text ends the run of typed text, so a drop is judged
     // BEFORE the key acts: Enter right after a drop sends the image, a
@@ -594,8 +589,8 @@ export function ChatScreen(props: {
     if (key.shift && key.downArrow) return scrollBy(-1);
     if (key.home) return scrollBy(Number.MAX_SAFE_INTEGER);
     if (key.end) return scrollBy(-Number.MAX_SAFE_INTEGER);
-    // Tab completes a half-typed command. Only there: anywhere else a tab is a
-    // literal character the user meant to type.
+    // Tab completes a half-typed command and types nothing anywhere else: the
+    // box never holds a tab (one inside pasted text goes in as spaces).
     if (key.tab && !key.shift) {
       const completed = completeCommand(inputRef.current.text);
       if (completed !== inputRef.current.text) setInputValue(promptState(completed));
@@ -647,58 +642,19 @@ export function ChatScreen(props: {
       goalRef.current = { text: moved.state.text, cursor: moved.state.cursor, goal: moved.goal };
       return void setInputValue(moved.state);
     }
-    // Word moves (issue #677): Alt-b/f where Option/Alt is sent as Esc,
-    // Alt-←/→ where it arrives as a modified arrow. Above plain ←→, which
-    // would otherwise take the modified arrows as single steps.
-    const word = !key.ctrl && key.meta ? char.toLowerCase() : "";
-    if ((key.meta && key.leftArrow) || word === "b") {
-      return void setInputValue(cursorWordLeft(inputRef.current));
-    }
-    if ((key.meta && key.rightArrow) || word === "f") {
-      return void setInputValue(cursorWordRight(inputRef.current));
-    }
-    // Deletes (issue #725): each mirrors a move, so Alt-d deletes to where
-    // Alt-f lands and Alt-Backspace to where Alt-b lands. Alt-Backspace sits
-    // ABOVE the plain Backspace branch: Ink reports ESC DEL as `delete` with
-    // `meta`, and the plain branch would take it as one character.
-    if (word === "d") return void setInputValue(deleteWordRight(inputRef.current));
-    if (key.meta && (key.backspace || key.delete)) {
-      return void setInputValue(deleteWordLeft(inputRef.current));
-    }
-    // ←→ and ^b/^f move the cursor one character inside the box — the
-    // editing primitive that was missing: without it a typo could only be
-    // fixed by deleting back to it.
-    if (key.leftArrow || (key.ctrl && char === "b")) {
-      return void setInputValue(cursorLeft(inputRef.current));
-    }
-    if (key.rightArrow || (key.ctrl && char === "f")) {
-      return void setInputValue(cursorRight(inputRef.current));
-    }
-    // ^a/^e: start/end of the current line; pressed again, of the whole
-    // input (readline muscle memory; the Home/End KEYS are taken by
-    // transcript scrolling above).
-    if (key.ctrl && char === "a") {
-      setInputValue(cursorLineStart(inputRef.current));
-      return;
-    }
-    if (key.ctrl && char === "e") {
-      setInputValue(cursorLineEnd(inputRef.current));
-      return;
-    }
-    // ^w: back to the previous whitespace (a path goes in one press). ^u: back
-    // to where ^a lands. ^d: the character under the cursor (issue #725).
-    if (key.ctrl && char === "w") return void setInputValue(deleteWhitespaceWordLeft(inputRef.current));
-    if (key.ctrl && char === "u") return void setInputValue(deleteToLineStart(inputRef.current));
-    if (key.ctrl && char === "d") return void setInputValue(deleteAtCursor(inputRef.current));
-    if (key.backspace || key.delete) {
-      // Both names mean BACKSPACE here. Ink names 0x7f — what the Backspace
-      // key sends on essentially every terminal — `delete`, and cannot tell
-      // it from the forward-delete key (ESC[3~) by flag. `main` treated the
-      // two as one thing and was right to: routing `delete` to forward-delete
-      // made Backspace a silent no-op while typing. The Delete key therefore
-      // stays a backspace until we sniff the raw sequence (rawKeys inspector
-      // sees ESC[3~); forward delete is ^d.
-      setInputValue(backspaceAtCursor(inputRef.current));
+    // Every other editing key is the shared line editor (`lineEditor.ts`), the
+    // one the setup questions and search boxes use too: ←/→ and ^b/^f, word
+    // moves (Alt or Ctrl with ←/→, Alt-b/f), ^a/^e, Backspace, Delete, the word
+    // deletes, ^w, ^u and ^d. Home/End are NOT passed on: here they scroll the
+    // transcript (above), which is why the line ends live on ^a/^e. See rules
+    // 77 and 78 for what each key must do; `rawKey` is what lets Delete delete
+    // forward while Backspace stays a backspace.
+    const edited = editKey(inputRef.current, char, key, {
+      homeEnd: false,
+      raw: rawKey.current,
+    });
+    if (edited) {
+      setInputValue(edited);
       return;
     }
     if (char && !key.ctrl && !key.meta) {
@@ -720,20 +676,36 @@ export function ChatScreen(props: {
         const body = batched?.[1];
         const atEnd = inputRef.current.cursor >= graphemeCount(inputRef.current.text);
         if (body !== undefined && !body.includes("\n") && atEnd) {
-          const text = `${inputRef.current.text}${body}`.trim();
+          // What came before the Enter is typed first, through the shared
+          // editor (`typeMultiline`), so a Backspace batched with it deletes
+          // instead of being sent as a byte.
+          const typed = typeMultiline(inputRef.current, body);
+          const text = typed.text.trim();
           // Busy or not, this is a submit: a prompt typed during a turn
-          // interrupts it, exactly as the plain-Enter branch does.
-          if (!text) return;
+          // interrupts it, exactly as the plain-Enter branch does. With
+          // nothing to send, Enter does nothing and what was typed stays.
+          if (!text) {
+            setInputValue(typed);
+            return;
+          }
           setInputValue(promptState(""));
           sendBox(text);
           return;
         }
         // Anything with INTERIOR newlines is a paste: in chat a paste is
         // NEVER a submit — the whole block lands in the box so it can be
-        // reviewed and edited first. (The wizard's name field uses
-        // applyTextChunk's split-and-submit rule instead — see
-        // `textInput.ts`.)
-        setInputValue(insertAtCursor(inputRef.current, normalised));
+        // reviewed and edited first. (The setup questions use
+        // `applyTextChunkAt`'s split-and-submit rule instead — see
+        // `lineEditor.ts`.) Its lines go in through the shared editor too.
+        setInputValue(typeMultiline(inputRef.current, normalised));
+        return;
+      }
+      // A chunk that carries keys — Backspaces that landed in one read, a
+      // stray control byte — is not part of a drop: the run was judged above,
+      // as before any other key, and the shared editor types the chunk, so
+      // its Backspaces delete and its other control characters do not go in.
+      if (carriesKeys(char)) {
+        setInputValue(typeMultiline(inputRef.current, char));
         return;
       }
       // A dropped file arrives as the path the terminal typed for it, over one

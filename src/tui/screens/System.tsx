@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text } from "ink";
 
+import { FieldText } from "../components/FieldText.tsx";
 import { Frame, Rule } from "../components/Frame.tsx";
 import { badge, glyph, theme } from "../theme.ts";
 import { type LogLine } from "../logBuffer.ts";
@@ -15,6 +16,9 @@ import type { SystemSnapshot, SystemState } from "../systemSnapshot.ts";
 import { useTerminalSize, viewportRows } from "../terminal.ts";
 import { frameChromeRows } from "../chrome.ts";
 import { maxOffset, nudgeOffset, tailViewport } from "../logViewport.ts";
+import { cursorEnd, graphemeCount } from "../promptBox.ts";
+import { feedField, useTextField } from "../useTextField.ts";
+import { useStableInput } from "../useStableInput.ts";
 
 const LEVEL_COLOR: Record<string, string> = {
   error: theme.bad,
@@ -94,7 +98,9 @@ export function SystemScreen(props: {
   // file, a journal, task_runs — where the interesting line is usually OLDER
   // than the window. A 1h default silently hid them and read as "no logs".
   const [time, setTime] = useState<LogTimeRange>("all");
-  const [text, setText] = useState("");
+  // The filter is a text field with a cursor; `text` is what the log pane reads.
+  const filter = useTextField("");
+  const text = filter.state.text;
   const [searchFocused, setSearchFocused] = useState(false);
   const sources = useMemo(
     () => props.sources ?? logSources({ host: props.host }),
@@ -173,10 +179,11 @@ export function SystemScreen(props: {
     setOffset(0);
   }, [source, type, persona, time, text, reloads]);
 
-  useInput((char, key) => {
-    // Scroll first, and before the search branch: arrows and page keys carry
-    // no character, so they are meaningless to the filter box and a user
+  useStableInput((char, key, raw) => {
+    // Scroll first, and before the search branch: ↑↓ and the page keys carry no
+    // character, so they are meaningless to the filter box and a user
     // mid-search still expects to be able to look back through the stream.
+    // Home/End scroll too, which is why the filter's own ends are ^a/^e here.
     if (tab === "logs") {
       const page = Math.max(1, bodyRows - 1);
       const nudge = (delta: number) =>
@@ -190,9 +197,9 @@ export function SystemScreen(props: {
     }
     if (tab === "logs" && searchFocused) {
       if (key.escape) return setSearchFocused(false);
-      if (key.backspace || key.delete) return setText((s) => s.slice(0, -1));
-      if (char && !key.ctrl && !key.meta && !key.return)
-        return setText((s) => s + char);
+      // The shared line editor: ←/→, Delete, Backspace, word moves, ^a/^e, and
+      // typed text at the cursor. A pasted newline is whitespace, never Enter.
+      feedField(filter, char, key, { raw, homeEnd: false, newline: "space" });
       return;
     }
     if (key.escape) return props.onBack();
@@ -208,9 +215,14 @@ export function SystemScreen(props: {
     else if (char === "s")
       setSourceIdx((i) => (sources.length ? (i + 1) % sources.length : 0));
     else if (char === "r") setReloads((n) => n + 1);
-    else if (key.backspace || key.delete) setText((s) => s.slice(0, -1));
-    else if (char && !key.ctrl && !key.meta && !key.return)
-      setText((s) => s + char);
+    else {
+      // Typing without focusing the box first is the old "type to filter": it
+      // APPENDS, wherever the cursor was left when the box lost focus. The
+      // cursor is not drawn here, so text must not land somewhere unseen.
+      const cur = filter.ref.current;
+      if (cur.cursor !== graphemeCount(cur.text)) filter.set(cursorEnd(cur));
+      feedField(filter, char, key, { raw, homeEnd: false, newline: "space" });
+    }
   });
 
   return (
@@ -326,9 +338,22 @@ export function SystemScreen(props: {
               LOGS
             </Text>
             <Box flexGrow={1} />
-            <Text color={theme.dim}>
-              filter: {text || "—"} {searchFocused ? "◂ typing" : "(/ to search)"}
-            </Text>
+            {searchFocused ? (
+              // The cursor cell stands in for the space before the hint when it
+              // sits past the text, so the line still reads `filter: abc ◂ typing`.
+              <FieldText
+                state={filter.state}
+                color={theme.dim}
+                prefix={<Text color={theme.dim}>filter: </Text>}
+                suffix={(atEnd) => (
+                  <Text color={theme.dim}>{`${atEnd ? "" : " "}◂ typing`}</Text>
+                )}
+              />
+            ) : (
+              <Text color={theme.dim}>
+                filter: {text || "—"} (/ to search)
+              </Text>
+            )}
           </Box>
           <Box>
             <Text color={theme.dim} wrap="truncate">

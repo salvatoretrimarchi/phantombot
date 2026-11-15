@@ -17,14 +17,15 @@
  * vault and erase a credential the user only meant to look at.
  */
 
-import React, { useRef, useState } from "react";
+import React from "react";
 
 import { useStableInput } from "../useStableInput.ts";
 import { Box, Text } from "ink";
 
+import { FieldText } from "../components/FieldText.tsx";
 import { Frame } from "../components/Frame.tsx";
 import { badge, theme } from "../theme.ts";
-import { applyTextChunk } from "../textInput.ts";
+import { feedField, useTextField } from "../useTextField.ts";
 
 export interface AskRequest {
   title: string;
@@ -68,11 +69,11 @@ export function AskScreen(props: {
   onQuit?: () => void;
 }): React.ReactElement {
   const { title, description, hint, masked, initial, allowEmpty } = props.request;
-  const [value, setValue] = useState(initial ?? "");
-  // Written synchronously on every keystroke: several chunks can arrive before
-  // React re-renders, and a closure-read `value` is one render stale — the
-  // same bug that once named a persona after only its last few letters.
-  const ref = useRef(value);
+  // The value AND its cursor. `field.ref` is written synchronously on every
+  // keystroke: several chunks can arrive before React re-renders, and a
+  // closure-read value is one render stale — the same bug that once named a
+  // persona after only its last few letters.
+  const field = useTextField(initial ?? "");
 
   const submit = (text: string) => {
     const trimmed = text.trim();
@@ -83,26 +84,19 @@ export function AskScreen(props: {
     props.onAnswer(trimmed);
   };
 
-  useStableInput((char, key) => {
+  useStableInput((char, key, raw) => {
     if (props.noBack && props.onQuit && key.ctrl && char === "q") {
       return props.onQuit();
     }
     if (key.escape) return props.onAnswer(undefined);
-    if (key.return) return submit(ref.current);
-    if (key.backspace || key.delete) {
-      ref.current = ref.current.slice(0, -1);
-      setValue(ref.current);
-      return;
-    }
-    if (char && !key.ctrl && !key.meta) {
-      const applied = applyTextChunk(ref.current, char);
-      ref.current = applied.submit ?? applied.text;
-      setValue(ref.current);
-      if (applied.submit) submit(applied.submit);
-    }
+    if (key.return) return submit(field.ref.current.text);
+    // Everything else is the shared line editor: ←/→, Home/End, Delete and
+    // Backspace, word moves, typed text and pastes land AT THE CURSOR. This
+    // screen used to append and `slice(0, -1)`, so a typo in the middle of a
+    // base URL could only be fixed by deleting the tail.
+    const result = feedField(field, char, key, { raw });
+    if (result.submit !== undefined) submit(result.submit);
   });
-
-  const shown = masked ? "•".repeat(value.length) : value;
 
   return (
     <Frame
@@ -143,9 +137,16 @@ export function AskScreen(props: {
         </Box>
       ) : null}
       <Box>
-        <Text color={theme.accent}>{"› "}</Text>
-        <Text>{shown}</Text>
-        <Text color={theme.accent}>▌</Text>
+        {/* One paragraph, label and value together: a value longer than the
+            line wraps with its own prefix, and the cursor cell is drawn on the
+            character it sits on, so moving it inside the text does not re-wrap
+            it. Past the end it takes one blank cell of its own, which starts a
+            new row when the line is exactly full. */}
+        <FieldText
+          state={field.state}
+          masked={masked}
+          prefix={<Text color={theme.accent}>{"› "}</Text>}
+        />
       </Box>
     </Frame>
   );

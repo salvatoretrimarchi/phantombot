@@ -333,6 +333,58 @@ describe("a drop split over several reads is still one drop (#729 review)", () =
     }
   });
 
+  test("Backspaces that land in one read right after a drop delete from its token", async () => {
+    const { stdout, instance, write, type } = await mount();
+    try {
+      await write(dropped(shot), 5);
+      // Two Backspaces in ONE read: Ink reports a string, not a key (rule 89).
+      // It still ends the run, so the drop is judged before they act.
+      await type(`${BACKSPACE}${BACKSPACE}`);
+      const frame = lastFrame(stdout.frames);
+      expect(frame).toContain("[Image #1");
+      expect(frame).not.toContain("[Image #1]");
+      expect(frame).not.toContain("Screenshot");
+      // The token is broken, so the image is not attached.
+      await type("\r");
+      expect(sent).toEqual(["[Image #1"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("a chunk that carried keys opens no run: the drop right after it is still a drop", async () => {
+    const { stdout, instance, write } = await mount();
+    try {
+      // x and a Backspace in one read: the box is empty again.
+      await write(`x${BACKSPACE}`, 5);
+      await write(dropped(shot), 5);
+      await settle();
+      const frame = lastFrame(stdout.frames);
+      expect(frame).toContain("[Image #1]");
+      expect(frame).not.toContain("Screenshot");
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("two paths with a tab between them are still two drops", async () => {
+    // A tab is whitespace a drop may carry (`splitDroppedPaths`), not a key:
+    // the chunk still joins a run, and the run is judged on the bytes typed.
+    const other = join(dir, "b.jpg");
+    await writeFile(other, "jpg-bytes");
+    const { instance, type } = await mount();
+    try {
+      await type(`${dropped(shot).trimEnd()}\t${dropped(other)}`);
+      await settle();
+      await type("\r");
+      expect(sent[0]).toMatch(
+        /^\[Image #1\] \[Image #2\]\n\n\[attached: .+\.png\]\n\[attached: .+\.jpg\]$/,
+      );
+    } finally {
+      instance.unmount();
+    }
+  });
+
   test("a drop still settling when the screen closes copies nothing", async () => {
     const { instance, write } = await mount();
     await write(dropped(shot), 5);

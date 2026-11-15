@@ -11,6 +11,7 @@ import {
   editorIsDirty,
   editorMove,
   editorText,
+  editorType,
   editorViewport,
 } from "../src/tui/editorBuffer.ts";
 
@@ -66,6 +67,34 @@ describe("backspace and delete", () => {
     b = editorMove(b, "end");
     b = editorDelete(b);
     expect(editorText(b)).toBe("abcd");
+  });
+});
+
+describe("typing a chunk: a read can carry keys as well as text", () => {
+  const atEnd = (text: string) => editorMove(editorFromText(text), "end", 10);
+
+  test("plain text and pasted lines go in as characters, at the cursor", () => {
+    const b = editorType(editorFromText("ab"), "tok\r\nen1\nmore");
+    expect(editorText(b)).toBe("tok\nen1\nmoreab");
+    expect(b.row).toBe(2);
+  });
+
+  test("Backspaces that land in one read delete; they are not saved as bytes", () => {
+    // Ink hands two Backspace presses read together over as "\x7f\x7f".
+    expect(editorText(editorType(atEnd("abcd"), "\x7f\x7f"))).toBe("ab");
+    expect(editorText(editorType(atEnd("abcd"), "\b"))).toBe("abc");
+    // Text and keys in one read are replayed in order, where the cursor is.
+    const typed = editorType(atEnd("abcd"), "xy\x7fz");
+    expect(editorText(typed)).toBe("abcdxz");
+    expect(typed.col).toBe(6);
+  });
+
+  test("a Backspace after a line break in the chunk takes the line break", () => {
+    expect(editorText(editorType(editorFromText(""), "a\n\x7fb"))).toBe("ab");
+  });
+
+  test("a tab is two spaces and every other control character is dropped", () => {
+    expect(editorText(editorType(editorFromText(""), "x\x01y\tz\x00\u009b!"))).toBe("xy  z!");
   });
 });
 

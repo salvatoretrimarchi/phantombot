@@ -7,11 +7,14 @@
  * native Ink screen, and all of its actual behaviour lives here, in a module
  * with no React, no Ink and no I/O: text in, next state out.
  *
- * Paste shares one rule with the rest of the app (`textInput.ts`): a chunk is
- * whatever the terminal delivered — a keystroke, a bracketed paste, a batch of
- * both — and newlines inside it are CHARACTERS, never submit signals. There is
- * no submit here, so a chunk is simply inserted, newlines and all.
+ * A chunk is whatever the terminal delivered — a keystroke, a paste, a batch
+ * of both — and newlines inside it are CHARACTERS, never submit signals: there
+ * is no submit here. What a chunk can carry besides text is the shared rule
+ * (`multilineSteps` in `lineEditor.ts`, the one the chat prompt types by), so
+ * `editorType` is how typed text goes in.
  */
+
+import { BACKSPACE, multilineSteps } from "./lineEditor.ts";
 
 export interface EditorBuffer {
   lines: string[];
@@ -60,10 +63,10 @@ function vmove(buf: EditorBuffer, row: number): EditorBuffer {
 }
 
 /**
- * Insert a chunk of text at the cursor — a keystroke, a paste, or anything in
- * between. Tabs become two spaces on load and on input alike: markdown does
- * not want literal tabs, and a tab character's width is whatever the terminal
- * feels like today.
+ * Insert text at the cursor — a character, a pasted block, one step of a typed
+ * chunk (`editorType`). Tabs become two spaces on load and on input alike:
+ * markdown does not want literal tabs, and a tab character's width is whatever
+ * the terminal feels like today.
  */
 export function editorInsert(buf: EditorBuffer, chunk: string): EditorBuffer {
   const normalized = chunk.replace(/\r\n|\r/g, "\n").replace(/\t/g, "  ");
@@ -89,6 +92,21 @@ export function editorInsert(buf: EditorBuffer, chunk: string): EditorBuffer {
 
 export function editorInsertNewline(buf: EditorBuffer): EditorBuffer {
   return editorInsert(buf, "\n");
+}
+
+/**
+ * Type a chunk the terminal delivered. Ink hands over keys that landed in one
+ * read as ONE string — two Backspaces are `"\x7f\x7f"` — so the keys in it are
+ * put back first (`multilineSteps`): a DEL or BS byte is a Backspace, a tab is
+ * two spaces, a newline is a line break and every other control character is
+ * dropped. Inserted as it came, that string went into the file as two bytes.
+ */
+export function editorType(buf: EditorBuffer, chunk: string): EditorBuffer {
+  return multilineSteps(chunk).reduce(
+    (next, step) =>
+      step === BACKSPACE ? editorBackspace(next) : editorInsert(next, step),
+    buf,
+  );
 }
 
 export function editorBackspace(buf: EditorBuffer): EditorBuffer {

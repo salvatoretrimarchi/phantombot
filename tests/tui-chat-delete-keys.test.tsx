@@ -135,16 +135,38 @@ describe("chat prompt delete keys (#725)", () => {
     expect(await typeThen("alpha beta/gamma", [KEY.kittyAltBackspace])).toBe("alpha beta/");
   });
 
-  test("plain Backspace still deletes one character, and so does the Delete key", async () => {
+  test("Backspace deletes the character before the cursor, Delete the one under it", async () => {
     expect(await typeThen("alpha", [KEY.backspace])).toBe("alph");
-    // Ink names ESC[3~ `delete` like 0x7f, so it stays a backspace (docs/reference/tui-keys.md).
-    expect(await typeThen("alpha", [KEY.deleteKey])).toBe("alph");
+    expect(await typeThen("alpha", [KEY.ctrlB, KEY.backspace])).toBe("alpa");
+    // Ink names ESC[3~ `delete` like 0x7f, so the two are told apart by the
+    // BYTES (`useRawKey`): this one deletes forward, and at the end of the
+    // text there is nothing under the cursor to delete.
+    expect(await typeThen("alpha", [KEY.ctrlA, KEY.deleteKey])).toBe("lpha");
+    expect(await typeThen("alpha", [KEY.deleteKey])).toBe("alpha");
+    // Kitty's spelling of Backspace (CSI 127 u) is still a backspace.
+    expect(await typeThen("alpha", [`${ESC}[127u`])).toBe("alph");
+  });
+
+  test("Ctrl-← / Ctrl-→ move by word, Ctrl-Backspace and Ctrl-Delete delete one", async () => {
+    expect(await typeThen("alpha beta", [`${ESC}[1;5D`, "X"])).toBe("alpha Xbeta");
+    expect(await typeThen("alpha beta", [KEY.ctrlA, `${ESC}[1;5C`, "X"])).toBe("alphaX beta");
+    // (The helper trims the row's trailing space.)
+    expect(await typeThen("alpha beta", [`${ESC}[127;5u`])).toBe("alpha");
+    expect(await typeThen("alpha beta", [KEY.ctrlA, `${ESC}[3;5~`])).toBe(" beta");
   });
 
   test("Alt-d deletes forward to the end of the word", async () => {
     // Readline's kill-word: the word goes, the space after it stays.
     expect(await typeThen("alpha beta", [KEY.ctrlA, KEY.altD])).toBe(" beta");
     expect(await typeThen("alpha beta", [KEY.ctrlA, KEY.kittyAltD])).toBe(" beta");
+  });
+
+  test("Alt-Delete deletes forward too, spelled with a modifier or with an Esc prefix", async () => {
+    expect(await typeThen("alpha beta", [KEY.ctrlA, `${ESC}[3;3~`])).toBe(" beta");
+    // ESC ESC [ 3 ~: read as a Backspace, this deleted the word BEHIND the
+    // cursor (nothing, at the start of the line).
+    expect(await typeThen("alpha beta", [KEY.ctrlA, `${ESC}${ESC}[3~`])).toBe(" beta");
+    expect(await typeThen("alpha beta", [`${ESC}${ESC}[3~`])).toBe("alpha beta");
   });
 
   test("^u deletes back to the start of the line; text after the cursor stays", async () => {

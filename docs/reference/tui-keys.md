@@ -1,23 +1,55 @@
 # TUI keys
 
-Keys in the chat screen of the interactive TUI (`phantombot` in a terminal).
-The prompt box follows Emacs/readline conventions; the Home/End keys and
-PgUp/PgDn belong to the transcript.
+Keys in the interactive TUI (`phantombot` in a terminal). The chat prompt and
+every one-line box follow the same Emacs/readline-style editing keys: every
+value the app asks for — a base URL, an API key, a model id, a persona name —
+plus the provider/model search boxes, the log filter and the
+type-the-name-to-confirm box. (The identity file editor has its own keys,
+further down.) In the chat prompt and the log filter, Home/End (and
+PgUp/PgDn) scroll what is behind the box instead, so the line ends are
+`Ctrl-A` / `Ctrl-E` there.
 
-## Editing the prompt
+## Editing a value
 
 | Key | Action |
 | --- | --- |
 | `←` / `→`, `Ctrl-B` / `Ctrl-F` | One character back / forward. |
-| `Alt-B` / `Alt-F`, `Alt-←` / `Alt-→` | To the start of the previous word / the end of the next word, across lines. |
-| `Ctrl-A` / `Ctrl-E` | Start / end of the current line. Pressed again: start / end of the whole input. |
-| `↑` / `↓`, `Ctrl-P` / `Ctrl-N` | One row up / down, as drawn (wrapped rows count). On the first / last row they scroll the transcript instead. |
+| `Alt-B` / `Alt-F`, `Alt-←` / `Alt-→`, `Ctrl-←` / `Ctrl-→` | To the start of the previous word / the end of the next word (in the chat prompt, across lines). |
+| `Home` / `End` | To the start / end of the value. In the chat prompt and the log filter these scroll instead; use `Ctrl-A` / `Ctrl-E`. |
+| `Ctrl-A` / `Ctrl-E` | Start / end of the current line. In the chat prompt, pressed again: start / end of the whole input. |
+| `↑` / `↓`, `Ctrl-P` / `Ctrl-N` | Chat prompt only: one row up / down, as drawn (wrapped rows count). On the first / last row they scroll the transcript instead. In every other box `↑` / `↓` never edit: they pick a row where there is a list. |
 | `Backspace` | Delete the character before the cursor. |
-| `Ctrl-D` | Delete the character under the cursor. |
-| `Alt-Backspace` / `Alt-D` | Delete back to where `Alt-B` lands / forward to where `Alt-F` lands. |
+| `Delete`, `Ctrl-D` | Delete the character under the cursor. |
+| `Alt-Backspace`, `Ctrl-Backspace` / `Alt-D`, `Alt-Delete`, `Ctrl-Delete` | Delete back to where `Alt-B` lands / forward to where `Alt-F` lands. |
 | `Ctrl-W` | Delete back to the previous space, so a path or URL goes in one press. |
-| `Ctrl-U` | Delete back to the start of the line. Pressed again at the line start: everything before the cursor. |
-| `Enter` | Send. |
+| `Ctrl-U` | Delete back to the start of the line. In the chat prompt, pressed again at the line start: everything before the cursor. |
+| `Enter` | Accept: save the value, take the highlighted row or choice, or send in the chat prompt. |
+| `Esc` | Cancel a question or picker; nothing is changed. In the log filter it leaves the box and keeps the text. |
+
+`Ctrl-Backspace` is its own key only where the terminal reports it as one (the
+kitty keyboard protocol); elsewhere it is usually indistinguishable from
+`Backspace`.
+
+Pasting inserts at the cursor, not at the end. In a question, a newline inside
+a paste is `Enter`: the text before it is saved. In the search boxes, the log
+filter and the confirm box a newline is a space, except those at the very end
+of the paste, which are dropped. A tab becomes one space in all of them. In the
+chat prompt, text that arrives with line breaks inside it stays in the box for
+you to review, a tab becomes two spaces, and dropped image paths become
+attachments (see Images). A single line that arrives with one newline at its
+end, while the cursor is at the end of the box, is sent: the app cannot tell it
+from that line typed and `Enter` pressed in the same read.
+
+The app cannot tell a paste from keys that arrive together, so in all of these
+boxes the bytes a `Backspace` press can send (`0x7f`, `0x08`) delete a
+character wherever they arrive: several presses delivered in one read each
+delete one. Any other control character inside typed or pasted text, apart
+from the newline and the tab above, is dropped.
+
+The chat prompt adds:
+
+| Key | Action |
+| --- | --- |
 | `Shift-Enter`, `Ctrl-Enter`, `Alt-Enter` | New line, in terminals that report modifiers (kitty protocol, CSI-u). |
 | `Ctrl-J` | New line, in every terminal. |
 | `Tab` | Complete a half-typed slash command. |
@@ -26,12 +58,31 @@ A word is a run of letters, digits and combining marks. Whitespace,
 punctuation, newlines and emoji separate words.
 
 Deleted text is gone: there is no kill ring, so `Ctrl-Y` does nothing.
-`Ctrl-K` opens the key inspector rather than deleting to the end of the line.
-The `Delete` key acts as `Backspace`, because Ink reports both keys the
-same way; use `Ctrl-D` to delete forward.
+`Ctrl-K` opens the key inspector in the chat rather than deleting to the end of
+the line.
+
+`Backspace` and `Delete` are told apart by the bytes the terminal sends
+(`0x7f` against `ESC [ 3 ~`), because Ink reports both as the same key. A
+terminal that sends `ESC [ 3 ~` for its Backspace key will delete forward;
+`Ctrl-K` in the chat shows what your terminal actually sends.
 
 The cursor is drawn as the character under it in inverse video, or as a solid
-cell at the end of a line. Moving it never re-wraps the text.
+cell at the end of the text. In the chat prompt, moving it never re-wraps the
+text. A secret is drawn as dots, one per character, and the cursor sits on a
+dot.
+
+## The identity file editor
+
+The Identity row of a persona's Configure screen opens one of its files
+(`SOUL.md`, `IDENTITY.md`, …) in a full-screen editor, not a one-line box.
+`←` `→` `↑` `↓` move, `Home` / `End` go to either end of the line, `PgUp` /
+`PgDn` move a screenful, `Enter` starts a new line and `Tab` inserts two
+spaces. `Backspace` deletes the character before the cursor and `Delete` the
+one under it, read from the bytes like everywhere else. A paste keeps its
+lines and a tab in it becomes two spaces; the Backspace bytes and the other
+control characters in typed or pasted text are treated as in the boxes above,
+so they are not typed into the file. `Ctrl-S` saves; `Esc` goes back, and asks
+first when there are unsaved changes.
 
 ## Transcript and app
 

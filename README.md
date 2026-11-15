@@ -241,7 +241,7 @@ For the storage model and lifecycle details, see
   one model appears per local persona. It spawns the agent per conversation over
   stdio: no daemon, no port, no token, and it keeps working while the Phantombot
   service is down.
-- **Terminal** — interactive TUI with Emacs-style editing and drag-in images
+- **Terminal** — interactive TUI with Emacs-style editing in the chat and in every question, and drag-in images
   ([keys](docs/reference/tui-keys.md)), plain REPL, or one-shot `ask` calls.
   Type `/quit` (or `/q`, `/exit`) to leave the TUI or REPL; the Phantombot
   service keeps running.

@@ -27,11 +27,14 @@
  */
 
 import React, { useState } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text } from "ink";
 
+import { FieldText } from "../components/FieldText.tsx";
 import { Frame } from "../components/Frame.tsx";
 import { Selectable } from "../components/Selectable.tsx";
 import { badge, theme } from "../theme.ts";
+import { feedField, useTextField } from "../useTextField.ts";
+import { useStableInput } from "../useStableInput.ts";
 import type { Consequence } from "../actions.ts";
 
 export interface ConfirmRequest {
@@ -54,35 +57,31 @@ export function ConfirmScreen(props: {
   const { title, consequence, danger, confirmName } = props.request;
   // `danger` starts on "No": the reflex Enter must decline, not hand over the box.
   const [index, setIndex] = useState(danger ? 1 : 0);
-  const [typed, setTyped] = useState("");
+  // The typed name is a text field with a cursor: a typo is fixed in place.
+  const field = useTextField("");
+  const typed = field.state.text;
   // The gate is exact — a typo is not consent. Case-sensitive on purpose: a
   // persona name is a directory name, and a directory name is exact.
   const confirmed = confirmName === undefined || typed === confirmName;
 
-  useInput((char, key) => {
+  useStableInput((char, key, raw) => {
     // esc is the same answer as "No" — but it is spelled the way every other
     // screen spells "take me back", so leaving is never a guess.
     if (key.escape) return props.onAnswer(false);
-    if (key.upArrow || key.leftArrow) return setIndex(0);
-    if (key.downArrow || key.rightArrow) return setIndex(1);
+    // ↑↓ always choose. ←/→ choose too — except while a name is being typed,
+    // where they move the cursor in it.
+    if (key.upArrow) return setIndex(0);
+    if (key.downArrow) return setIndex(1);
+    if (confirmName === undefined) {
+      if (key.leftArrow) return setIndex(0);
+      if (key.rightArrow) return setIndex(1);
+    }
     // With a typed-name gate, printable keys go INTO the name — `y` can no
     // longer shortcut, or a persona called "yes" could be accepted by accident.
-    if (confirmName !== undefined) {
-      if (key.delete || char === "\u0008" || char === "\u007f") {
-        setTyped((t) => t.slice(0, -1));
+    // Enter is the screen's own; the rest is the shared line editor.
+    if (confirmName !== undefined && !key.return) {
+      if (feedField(field, char, key, { raw, max: 64, newline: "space" }).handled)
         return;
-      }
-      if (
-        char &&
-        char.length === 1 &&
-        char >= " " &&
-        !key.ctrl &&
-        !key.meta &&
-        !key.return
-      ) {
-        setTyped((t) => (t + char).slice(0, 64));
-        return;
-      }
     }
     // `y`/`n` answer outright: this is a yes/no question, and someone who
     // knows the answer should not have to move a cursor to give it.
@@ -142,10 +141,11 @@ export function ConfirmScreen(props: {
               {confirmName}
             </Text>
             <Text color={theme.warn}> to confirm: </Text>
-            <Text bold>{typed}</Text>
-            <Text bold color={confirmed ? theme.ok : theme.accent}>
-              ▌
-            </Text>
+            <FieldText
+              state={field.state}
+              bold
+              color={confirmed ? theme.ok : undefined}
+            />
           </Text>
         </Box>
       ) : null}

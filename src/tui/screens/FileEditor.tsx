@@ -13,9 +13,11 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text } from "ink";
 
 import { Frame } from "../components/Frame.tsx";
+import { deleteKind } from "../lineEditor.ts";
+import { useStableInput } from "../useStableInput.ts";
 import { frameChromeRows } from "../chrome.ts";
 import { useTerminalSize, viewportRows } from "../terminal.ts";
 import { MenuItem } from "../components/Menu.tsx";
@@ -31,6 +33,7 @@ import {
   editorIsDirty,
   editorMove,
   editorText,
+  editorType,
   editorViewport,
   type EditorBuffer,
 } from "../editorBuffer.ts";
@@ -108,7 +111,7 @@ export function FileEditorScreen(props: {
     }
   }
 
-  useInput((input, key) => {
+  useStableInput((input, key, raw) => {
     if (loadError) {
       // The file never opened; there is no buffer to edit and saving would
       // be destructive. esc is the only way out.
@@ -160,11 +163,18 @@ export function FileEditorScreen(props: {
       setBuf(editorInsertNewline(buf));
       return;
     }
-    if (key.backspace) {
+    // Which way a delete goes is the shared rule (`deleteKind`): Ink names both
+    // the Backspace key (0x7f) and the Delete key (ESC[3~) `delete`, so only
+    // the bytes tell them apart. Mapping `key.delete` straight to a forward
+    // delete made the Backspace key remove the character AFTER the cursor: at
+    // the end of a line it pulled the next line up, and at the end of the
+    // file it did nothing.
+    const kind = deleteKind(key, raw);
+    if (kind === "backward") {
       setBuf(editorBackspace(buf));
       return;
     }
-    if (key.delete) {
+    if (kind === "forward") {
       setBuf(editorDelete(buf));
       return;
     }
@@ -172,8 +182,11 @@ export function FileEditorScreen(props: {
       setBuf(editorInsert(buf, "\t"));
       return;
     }
+    // Typed text goes in through the shared chunk rule (`editorType`): a read
+    // can carry keys as well as text, and Backspaces that land in one read
+    // delete here too instead of being saved into the file as bytes.
     if (input && !key.ctrl && !key.meta) {
-      setBuf(editorInsert(buf, input));
+      setBuf(editorType(buf, input));
     }
   });
 

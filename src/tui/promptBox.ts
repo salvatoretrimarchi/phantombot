@@ -46,7 +46,8 @@ export function promptState(text: string): PromptState {
 
 const SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-function graphemes(text: string): string[] {
+/** The text as user-perceived characters (an emoji or a combining sequence is ONE). */
+export function graphemes(text: string): string[] {
   const out: string[] = [];
   for (const { segment } of SEGMENTER.segment(text)) out.push(segment);
   return out;
@@ -64,9 +65,15 @@ function clamp(state: PromptState): PromptState {
 export function insertAtCursor(state: PromptState, chunk: string): PromptState {
   if (chunk === "") return state;
   const gs = graphemes(state.text);
-  const chunkGs = graphemes(chunk);
-  const next = [...gs.slice(0, state.cursor), ...chunkGs, ...gs.slice(state.cursor)];
-  return clamp({ text: next.join(""), cursor: state.cursor + chunkGs.length });
+  // The cursor lands after what was typed, counted in the text as it now
+  // reads. Counting the chunk on its own is one too many when its first
+  // character joins the one before the cursor: a combining mark or a Thai
+  // vowel sign typed as its own keystroke.
+  const head = gs.slice(0, state.cursor).join("") + chunk;
+  return clamp({
+    text: head + gs.slice(state.cursor).join(""),
+    cursor: graphemes(head).length,
+  });
 }
 
 /** Delete the grapheme BEFORE the cursor (backspace). No-op at the start. */

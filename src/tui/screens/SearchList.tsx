@@ -19,11 +19,14 @@
  */
 
 import React, { useMemo, useState } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text } from "ink";
 
+import { FieldText } from "../components/FieldText.tsx";
 import { Frame } from "../components/Frame.tsx";
 import { Selectable } from "../components/Selectable.tsx";
 import { badge, theme } from "../theme.ts";
+import { feedField, useTextField } from "../useTextField.ts";
+import { useStableInput } from "../useStableInput.ts";
 import type { ChooseOption } from "./Choose.tsx";
 
 export interface SearchListRequest {
@@ -49,7 +52,10 @@ export function SearchListScreen(props: {
   onAnswer: (value: string | undefined) => void;
 }): React.ReactElement {
   const { title, banner, description, options, initial } = props.request;
-  const [query, setQuery] = useState("");
+  // The query is a text field with a cursor — a typo in a long model id is
+  // fixed where it is, not by deleting back to it.
+  const field = useTextField("");
+  const query = field.state.text;
   const [index, setIndex] = useState(() => {
     const at = options.findIndex((option) => option.value === initial);
     return at >= 0 ? at : 0;
@@ -75,29 +81,24 @@ export function SearchListScreen(props: {
   // as the answer — the free-text fallback the CLI pickers had.
   const freeText = query.trim().length > 0 && filtered.length === 0;
 
-  useInput((chunk, key) => {
+  useStableInput((chunk, key, raw) => {
     if (key.escape) return props.onAnswer(undefined);
     if (key.upArrow) return setIndex(Math.max(0, at - 1));
     if (key.downArrow)
       return setIndex(Math.min(filtered.length - 1, at + 1));
-    if (key.backspace || key.delete)
-      return setQuery((q) => q.slice(0, -1));
     if (key.return) {
       if (freeText) return props.onAnswer(query.trim());
       const picked = filtered[at];
       if (picked) props.onAnswer(picked.value);
       return;
     }
-    // Any other printable chunk — a letter, or a whole pasted model id — is
-    // search text. A newline inside a chunk is whitespace here, not a submit:
-    // this box filters, it does not answer.
-    if (chunk && !key.ctrl && !key.meta) {
-      const text = chunk.replace(/\r\n|\r|\n/g, " ");
-      if (text) {
-        setQuery((q) => q + text);
-        setIndex(0);
-      }
-    }
+    // Everything else edits the query at its cursor (←/→, Home/End, Delete,
+    // Backspace, word moves). Typed text — a letter, or a whole pasted model id
+    // — is search text. A newline inside a chunk is whitespace here, not a
+    // submit: this box filters, it does not answer. Typing restarts the list at
+    // its best match; moving the cursor or deleting leaves the row where it is.
+    const result = feedField(field, chunk, key, { raw, newline: "space" });
+    if (result.typed) setIndex(0);
   });
 
   return (
@@ -125,9 +126,11 @@ export function SearchListScreen(props: {
         </Box>
       ) : null}
       <Box marginTop={1}>
-        <Text color={theme.dim}>Search: </Text>
-        <Text bold>{query}</Text>
-        <Text color={theme.dim}>▊</Text>
+        <FieldText
+          state={field.state}
+          bold
+          prefix={<Text color={theme.dim}>Search: </Text>}
+        />
       </Box>
       <Box flexDirection="column" marginTop={1} overflow="hidden">
         {freeText ? (

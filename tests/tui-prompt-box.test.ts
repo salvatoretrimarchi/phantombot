@@ -21,6 +21,24 @@ describe("promptBox cursor ops", () => {
     expect(s.cursor).toBe(4);
   });
 
+  it("a mark that joins the character before the cursor leaves the cursor after that character", () => {
+    // U+0301 typed as its own keystroke after the "e" of "ex": "é" is ONE
+    // character, so the cursor is at 1 and the next letter goes before the x.
+    const accented = insertAtCursor({ text: "ex", cursor: 1 }, "\u0301");
+    expect(accented).toEqual({ text: "e\u0301x", cursor: 1 });
+    expect(insertAtCursor(accented, "Z").text).toBe("e\u0301Zx");
+    // Thai: the vowel sign U+0E34 is typed after its consonant.
+    const thai = insertAtCursor({ text: "\u0e01\u0e02", cursor: 1 }, "\u0e34");
+    expect(thai.cursor).toBe(1);
+    expect(insertAtCursor(thai, "X").text).toBe("\u0e01\u0e34X\u0e02");
+    // A chunk that starts with such a mark and goes on: one joined character
+    // plus the two letters after it.
+    expect(insertAtCursor({ text: "ex", cursor: 1 }, "\u0301ab")).toEqual({
+      text: "e\u0301abx",
+      cursor: 3,
+    });
+  });
+
   it("backspace deletes before the cursor only", () => {
     const s = backspaceAtCursor({ text: "hello", cursor: 3 });
     expect(s.text).toBe("helo");
